@@ -7,6 +7,18 @@
  * the realtime layer (Phase 6) land in later phases — see .claude/plans/typed-seeking-frog.md.
  */
 
+// Mitigates SSRF-via-DNS-rebinding in ImageProxyService/SpiderService's URL-safety checks: both
+// resolve a hostname, validate every address is public, then hand the *same hostname string* to
+// jsoup for the actual fetch — which re-resolves DNS independently. Without this, a malicious
+// authoritative DNS server could answer the safety check's lookup with a public IP and jsoup's
+// (moments-later) lookup with a private one (127.0.0.1, 169.254.169.254, etc.), bypassing the
+// check entirely. Both lookups go through this same JVM-wide InetAddress cache, so pinning a
+// short positive TTL here forces jsoup's connect() to reuse the exact answer the safety check
+// already validated, closing the race — instead of requiring a bespoke resolve-then-connect-by-IP
+// networking layer for every external fetch in the app.
+createObject( "java", "java.security.Security" ).setProperty( "networkaddress.cache.ttl", "30" )
+createObject( "java", "java.security.Security" ).setProperty( "networkaddress.cache.negative.ttl", "10" )
+
 app = boxExpress()
 
 Config     = new "lib.Config"()
@@ -91,7 +103,13 @@ app.use( ( req, res, next ) => {
  * to look the cookie up against this exact store instance to identify the connecting user.
  */
 sessionMiddleware = new "bxModules.boxexpress.models.middleware.Session"()
-app.use( sessionMiddleware.session( { name: "dt_sid", maxAge: 60 * 60 * 24 * 30 } ) )
+app.use( sessionMiddleware.session( {
+	name: "dt_sid",
+	maxAge: 60 * 60 * 24 * 30,
+	// Only over plain HTTP in dev (no local TLS) — everywhere else the cookie should never be
+	// sendable over an accidental/downgraded HTTP request, HSTS above notwithstanding.
+	secure: Config.getEnv() != "development"
+} ) )
 
 /**
  * Realtime layer (Phase 6) — one shared STOMP broker for comment/vote/notification broadcasts
@@ -110,6 +128,15 @@ AppContext.register( "Presence", new "ws.Presence"( stomp ) )
 apiRouter = boxExpressRouter()
 new "routes.ApiRouter"().register( app, apiRouter )
 app.use( "/api", apiRouter )
+
+// CSRF protection for the session-authenticated page/action routes below — not /api/*, which
+// is machine-to-machine (X-Api-Key header, no ambient browser credentials) and unaffected since
+// requests there terminate inside apiRouter above without reaching this middleware. Mounted
+// before RequestContext.bootstrap() so it can read req.csrfToken() into res.locals for every
+// view (see lib/RequestContext.bx) — plain <form> posts (login/signup/submit) carry it as a
+// hidden _csrf field, fetch()-driven actions (public/assets/js/actions.js) as an X-CSRF-Token
+// header read from the <meta name="csrf-token"> tag Main.bxm renders.
+app.use( boxExpressCsrf() )
 
 // Replaces RequestService.bx::setup_request() + AppRouter.bx::preHandler()'s social-meta
 // defaults — runs on every remaining (page) request, populating res.locals for the layout

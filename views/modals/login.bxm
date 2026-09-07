@@ -21,6 +21,8 @@
 					</bx:if>
 
 					<form method="post" action="/login" data-login-panel="login" style="#flashMode == 'login' ? '' : 'display:none;'#">
+						<input type="hidden" name="_csrf" value="#encodeForHTMLAttribute( data.csrfToken ?: '' )#">
+						<input type="hidden" name="redirect_to" value="#encodeForHTMLAttribute( data.currentPath ?: '/' )#">
 						<div class="login-field mb-4">
 							<label class="login-label" for="login-user">Username or email</label>
 							<input id="login-user" class="login-input" type="text" name="user" required autocomplete="username" placeholder="User name or email" value="#encodeForHTMLAttribute(flashUsername)#">
@@ -40,6 +42,8 @@
 					</form>
 
 					<form method="post" action="/signup" data-login-panel="signup" style="#flashMode == 'signup' ? '' : 'display:none;'#">
+						<input type="hidden" name="_csrf" value="#encodeForHTMLAttribute( data.csrfToken ?: '' )#">
+						<input type="hidden" name="redirect_to" value="#encodeForHTMLAttribute( data.currentPath ?: '/' )#">
 						<div class="login-field mb-4">
 							<label class="login-label" for="signup-username">Username</label>
 							<input id="signup-username" class="login-input" type="text" name="username" required autocomplete="username" placeholder="User name" value="#encodeForHTMLAttribute( len(flashUsername) ? flashUsername : suggestedUsername )#">

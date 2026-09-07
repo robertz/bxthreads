@@ -90,47 +90,71 @@ class {
 	}
 
 	function logoutRoute( req, res ) {
-		structDelete( arguments.req.session, "uid" );
+		// Full destroySession() (store entry + cookie), not just structDelete(session, "uid") —
+		// a session id captured before logout (network exposure, a shared/borrowed machine)
+		// should stop being usable for anything (flash, CSRF token, presence) the instant the
+		// user logs out, not just stop being authenticated.
+		arguments.req.destroySession();
 		arguments.res.redirect( "/" );
 	}
 
 	function loginRoute( req, res ) {
+		var backTo = safeRedirectTarget( arguments.req );
+
+		if ( tooManyAttempts( arguments.req, "login" ) ) {
+			variables.Session.setFlash( arguments.req, { mode: "login", error: "Too many attempts — wait a few minutes and try again." } );
+			arguments.res.redirect( backTo ?: "/" );
+			return;
+		}
+
 		var userField = trim( arguments.req.body.user ?: "" );
 		var password  = arguments.req.body.password ?: "";
 
 		var user = new "models.beans.User"().getUserByNameOrEmail( userField );
 		if ( !user.hasLoaded() || !user.authenticate( password ) ) {
+			recordAttempt( arguments.req, "login" );
 			variables.Session.setFlash( arguments.req, { mode: "login", error: "Incorrect username/email or password.", username: userField } );
-			arguments.res.redirect( "/" );
+			arguments.res.redirect( backTo ?: "/" );
 			return;
 		}
 
 		arguments.req.session.uid = user.getId();
 		variables.AppContext.get( "ActivityService" ).log( user.getId(), "login" );
-		arguments.res.redirect( "/home" );
+		arguments.res.redirect( backTo ?: "/home" );
 	}
 
 	function signupRoute( req, res ) {
+		var backTo = safeRedirectTarget( arguments.req );
+
+		if ( tooManyAttempts( arguments.req, "signup" ) ) {
+			variables.Session.setFlash( arguments.req, { mode: "signup", error: "Too many attempts — wait a few minutes and try again." } );
+			arguments.res.redirect( backTo ?: "/" );
+			return;
+		}
+
 		var username = trim( arguments.req.body.username ?: "" );
 		var email    = trim( arguments.req.body.email ?: "" );
 		var password = arguments.req.body.password ?: "";
 
 		if ( !len( username ) || !len( email ) || len( password ) < 8 ) {
+			recordAttempt( arguments.req, "signup" );
 			variables.Session.setFlash( arguments.req, { mode: "signup", error: "Fill in every field — password needs at least 8 characters.", username: username, email: email } );
-			arguments.res.redirect( "/" );
+			arguments.res.redirect( backTo ?: "/" );
 			return;
 		}
 
 		var existingByName = new "models.beans.User"().getUserByNameOrEmail( username );
 		if ( existingByName.hasLoaded() ) {
+			recordAttempt( arguments.req, "signup" );
 			variables.Session.setFlash( arguments.req, { mode: "signup", error: "That username is already taken.", username: username, email: email } );
-			arguments.res.redirect( "/" );
+			arguments.res.redirect( backTo ?: "/" );
 			return;
 		}
 		var existingByEmail = new "models.beans.User"().getUserByNameOrEmail( email );
 		if ( existingByEmail.hasLoaded() ) {
+			recordAttempt( arguments.req, "signup" );
 			variables.Session.setFlash( arguments.req, { mode: "signup", error: "That email is already registered.", username: username, email: email } );
-			arguments.res.redirect( "/" );
+			arguments.res.redirect( backTo ?: "/" );
 			return;
 		}
 
@@ -141,7 +165,7 @@ class {
 
 		arguments.req.session.uid = user.getId();
 		variables.AppContext.get( "ActivityService" ).log( user.getId(), "signup" );
-		arguments.res.redirect( "/home" );
+		arguments.res.redirect( backTo ?: "/home" );
 	}
 
 	function notFoundRoute( req, res ) {
@@ -660,6 +684,49 @@ class {
 	// Private helpers (not routes — safe to be private, only called from this
 	// class's own route methods, never invoked directly by boxlang-express)
 	// =========================================================================
+
+	/**
+	 * The page the login/signup modal was opened from, so a successful (or failed, so the modal
+	 * reopens with the flash error in the same place) submit lands the user back where they
+	 * clicked Login rather than always at /home — see the modal's hidden `redirect_to` field
+	 * (views/modals/login.bxm), rendered from res.locals.currentPath at the time that page loaded.
+	 *
+	 * Only ever returns an internal, single-segment-root path (or null) — never the raw submitted
+	 * value — so a crafted `redirect_to` can't turn this login form into an open redirect:
+	 * rejects anything not starting with "/", plus "//" and "/\" (both browser-normalized to a
+	 * scheme-relative URL, i.e. an off-site redirect) even though they do start with "/".
+	 */
+	private any function safeRedirectTarget( required any req ) {
+		var target = trim( arguments.req.body.redirect_to ?: "" );
+		if ( !len( target ) || target.left( 1 ) != "/" || target.left( 2 ) == "//" || target.left( 2 ) == "/\" ) {
+			return javacast( "null", "" );
+		}
+		return target;
+	}
+
+	/**
+	 * Lightweight per-IP throttle for /login and /signup — bcrypt already makes each guess
+	 * expensive, but nothing previously stopped unlimited distributed attempts. Backed by the
+	 * same `dismalCache` region as everything else here (soft-reference store, so a counter can
+	 * in principle be evicted early under memory pressure — an acceptable trade-off for this
+	 * app's threat model, not a durable/distributed rate limit).
+	 *
+	 * @param bucket "login" or "signup" — kept separate so hammering one doesn't lock out the
+	 *               other from the same IP.
+	 */
+	private boolean function tooManyAttempts( required any req, required string bucket, numeric limit = 10 ) {
+		// cache().get() returns a BoxLang Attempt wrapper (present even for a missing key), not
+		// a bare value/null — getOrDefault() unwraps it to a real Integer either way.
+		var count = cache( "dismalCache" ).get( "ratelimit:#arguments.bucket#:#arguments.req.ip#" ).getOrDefault( 0 );
+		return count >= arguments.limit;
+	}
+
+	/** Increments the failed-attempt counter for tooManyAttempts(), same 15-minute window. */
+	private function recordAttempt( required any req, required string bucket, numeric windowSeconds = 900 ) {
+		var key   = "ratelimit:#arguments.bucket#:#arguments.req.ip#";
+		var count = cache( "dismalCache" ).get( key ).getOrDefault( 0 );
+		cache( "dismalCache" ).set( key, count + 1, arguments.windowSeconds );
+	}
 
 	private function renderForumIndex( req, res, forumParam ) {
 		arguments.res.locals.posts = [];

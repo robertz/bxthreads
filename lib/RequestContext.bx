@@ -27,6 +27,12 @@ class {
 		arguments.res.locals.isIdentified = isIdentified;
 		arguments.res.locals.currentUser  = userBean.getMemento();
 		arguments.res.locals.userBean     = userBean;
+		// Minted by boxExpressCsrf() (mounted in app.bxs before this middleware) — exposed to
+		// every view via res.locals so both plain <form> posts (a hidden _csrf field) and
+		// fetch()-driven actions (the <meta name="csrf-token"> tag actions.js reads) can submit
+		// it back. req.csrfToken only exists on routes downstream of boxExpressCsrf(), which is
+		// every page/action route this bootstrap runs for — see app.bxs's mount order.
+		arguments.res.locals.csrfToken = structKeyExists( arguments.req, "csrfToken" ) ? arguments.req.csrfToken() : "";
 
 		arguments.res.locals.forumSelect = false;
 		arguments.res.locals.headerCss   = [];

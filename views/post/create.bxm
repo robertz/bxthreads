@@ -13,6 +13,7 @@
 				</bx:if>
 
 				<form class="editor-body" method="post" action="/submit" data-editor-form>
+						<input type="hidden" name="_csrf" value="#encodeForHTMLAttribute( data.csrfToken ?: '' )#">
 
 					<div class="editor-field">
 						<label class="editor-label" for="editor_forum">Post to</label>

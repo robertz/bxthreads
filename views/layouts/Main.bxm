@@ -5,9 +5,10 @@
 	<script>(function(){var s=localStorage.getItem('dt-theme');var t=s?s:(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');if(t==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<meta name="description" content="#data.meta.description#">
-	<meta name="author" content="#data.meta.author#">
-	<title>#data.meta.title#</title>
+	<meta name="description" content="#encodeForHTMLAttribute( data.meta.description )#">
+	<meta name="author" content="#encodeForHTMLAttribute( data.meta.author )#">
+	<title>#encodeForHTML( data.meta.title )#</title>
+	<meta name="csrf-token" content="#encodeForHTMLAttribute( data.csrfToken ?: '' )#">
 
 	<bx:loop collection="#data.socialMeta#" item="i">
 		<meta property="#encodeForHTMLAttribute(i)#" content="#encodeForHTMLAttribute(data.socialMeta[i])#">

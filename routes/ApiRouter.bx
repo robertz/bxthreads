@@ -18,7 +18,7 @@ class {
 		r.use( ( req, res, next ) => {
 			var configuredKey = variables.AppContext.get( "Config" ).getApiKey();
 			var providedKey   = req.get( "X-Api-Key" ) ?: "";
-			if ( !len( configuredKey ) || providedKey != configuredKey ) {
+			if ( !len( configuredKey ) || !isValidApiKey( providedKey, configuredKey ) ) {
 				res.status( 401 ).json( { success: false, error: "Unauthorized" } );
 				return;
 			}
@@ -524,6 +524,21 @@ class {
 	// =========================================================================
 	// Private helpers
 	// =========================================================================
+
+	/**
+	 * Constant-time X-Api-Key comparison — a plain `==`/`!=` short-circuits on the first
+	 * mismatched byte, which leaks (via response timing) how many leading characters of a
+	 * guess were correct. MessageDigest.isEqual() always walks the full length of both inputs
+	 * regardless of where they first differ. Hashing first (rather than comparing the raw
+	 * strings' bytes) also keeps the two inputs the same length going in, so the comparison
+	 * itself can't be timed by input length either.
+	 */
+	private boolean function isValidApiKey( required string provided, required string configured ) {
+		var digest   = createObject( "java", "java.security.MessageDigest" ).getInstance( "SHA-256" );
+		var providedHash   = digest.digest( charsetDecode( arguments.provided, "utf-8" ) );
+		var configuredHash = digest.digest( charsetDecode( arguments.configured, "utf-8" ) );
+		return createObject( "java", "java.security.MessageDigest" ).isEqual( providedHash, configuredHash );
+	}
 
 	private function ok( required any res, required any data, numeric statusCode = 200 ) {
 		arguments.res.status( arguments.statusCode ).json( { success: true, data: arguments.data } );

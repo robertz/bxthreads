@@ -7,10 +7,18 @@
 
 const DTActions = (function () {
 
+	// The CSRF token minted by boxExpressCsrf() for this page load (see lib/RequestContext.bx /
+	// views/layouts/Main.bxm's <meta name="csrf-token">). GET/HEAD/OPTIONS requests are exempt
+	// server-side, so only state-changing fetches below need it, via this header.
+	function csrfToken() {
+		const meta = document.querySelector('meta[name="csrf-token"]');
+		return meta ? meta.getAttribute("content") : "";
+	}
+
 	async function postJSON(url, method, data) {
 		const res = await fetch(url, {
 			method: method,
-			headers: { "Content-Type": "application/json" },
+			headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
 			body: data === undefined ? undefined : JSON.stringify(data)
 		});
 		let body = null;
@@ -148,7 +156,7 @@ const DTActions = (function () {
 		try {
 			const res = await fetch(`/posts/${postId}/comments`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
 				body: JSON.stringify({ body: body, parent_id: parentId })
 			});
 			const html = await res.text();
@@ -491,7 +499,7 @@ const DTActions = (function () {
 
 	async function handleLogout() {
 		try {
-			await fetch("/logout", { method: "POST" });
+			await fetch("/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken() } });
 		} catch (e) { /* best-effort */ }
 		window.location.href = "/";
 	}
