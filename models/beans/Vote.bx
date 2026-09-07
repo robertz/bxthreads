@@ -80,54 +80,18 @@ class accessors="true" {
 	){
 		var target = resolveTarget( arguments.posts_id, arguments.comments_id );
 
-		var existing = queryExecute(
-			"SELECT BIN_TO_UUID(id) AS id, vote
-			 FROM Votes
-			 WHERE users_id = UUID_TO_BIN(:users_id)
-			   AND #target.col# = UUID_TO_BIN(:target_id)
-			 LIMIT 1",
-			{
-				"users_id"  : { value : arguments.users_id, cfsqltype : "cf_sql_varchar" },
-				"target_id" : { value : target.id, cfsqltype : "cf_sql_varchar" }
-			},
-			{ returnType : "array" }
-		);
-
 		var action = "";
-
-		if ( existing.len() ) {
-			if ( existing[ 1 ].vote == arguments.vote ) {
-				// Same vote — remove
-				queryExecute(
-					"DELETE FROM Votes WHERE id = UUID_TO_BIN(:id)",
-					{ "id" : { value : existing[ 1 ].id, cfsqltype : "cf_sql_varchar" } }
-				);
-				action = "removed";
-			} else {
-				// Different vote — flip
-				queryExecute(
-					"UPDATE Votes SET vote = :vote WHERE id = UUID_TO_BIN(:id)",
-					{
-						"vote" : { value : arguments.vote, cfsqltype : "cf_sql_tinyint" },
-						"id"   : { value : existing[ 1 ].id, cfsqltype : "cf_sql_varchar" }
-					}
-				);
-				action = "flipped";
+		try {
+			action = attemptToggle( arguments.users_id, arguments.vote, target );
+		} catch ( any e ) {
+			// A concurrent request for the same (users_id, target) can insert its row between our
+			// SELECT and our INSERT below — the UNIQUE key on Votes(users_id, posts_id/comments_id)
+			// then rejects ours as a duplicate. Retry once now that row genuinely exists, instead
+			// of surfacing a raw DB error as a 500 to whichever request lost the race.
+			if ( !findNoCase( "Duplicate entry", e.message ) ) {
+				throw( e );
 			}
-		} else {
-			// No existing vote — insert
-			var newId = lCase( createGUID() );
-			queryExecute(
-				"INSERT INTO Votes (id, users_id, #target.col#, vote)
-				 VALUES (UUID_TO_BIN(:id), UUID_TO_BIN(:users_id), UUID_TO_BIN(:target_id), :vote)",
-				{
-					"id"        : { value : newId, cfsqltype : "cf_sql_varchar" },
-					"users_id"  : { value : arguments.users_id, cfsqltype : "cf_sql_varchar" },
-					"target_id" : { value : target.id, cfsqltype : "cf_sql_varchar" },
-					"vote"      : { value : arguments.vote, cfsqltype : "cf_sql_tinyint" }
-				}
-			);
-			action = "created";
+			action = attemptToggle( arguments.users_id, arguments.vote, target );
 		}
 
 		var targetShort = left( target.id, 8 );
@@ -209,6 +173,62 @@ class accessors="true" {
 	// -------------------------------------------------------------------------
 	// Private
 	// -------------------------------------------------------------------------
+
+	/**
+	 * Does the actual read-then-write for `toggle()`: same vote removes it, opposite vote flips
+	 * it, no existing vote inserts one. Split out so `toggle()` can retry it once if the INSERT
+	 * loses a race to a concurrent request for the same (users_id, target).
+	 *
+	 * @return {string} "created" | "flipped" | "removed"
+	 */
+	private string function attemptToggle( required string users_id, required numeric vote, required struct target ){
+		var existing = queryExecute(
+			"SELECT BIN_TO_UUID(id) AS id, vote
+			 FROM Votes
+			 WHERE users_id = UUID_TO_BIN(:users_id)
+			   AND #arguments.target.col# = UUID_TO_BIN(:target_id)
+			 LIMIT 1",
+			{
+				"users_id"  : { value : arguments.users_id, cfsqltype : "cf_sql_varchar" },
+				"target_id" : { value : arguments.target.id, cfsqltype : "cf_sql_varchar" }
+			},
+			{ returnType : "array" }
+		);
+
+		if ( existing.len() ) {
+			if ( existing[ 1 ].vote == arguments.vote ) {
+				// Same vote — remove
+				queryExecute(
+					"DELETE FROM Votes WHERE id = UUID_TO_BIN(:id)",
+					{ "id" : { value : existing[ 1 ].id, cfsqltype : "cf_sql_varchar" } }
+				);
+				return "removed";
+			}
+			// Different vote — flip
+			queryExecute(
+				"UPDATE Votes SET vote = :vote WHERE id = UUID_TO_BIN(:id)",
+				{
+					"vote" : { value : arguments.vote, cfsqltype : "cf_sql_tinyint" },
+					"id"   : { value : existing[ 1 ].id, cfsqltype : "cf_sql_varchar" }
+				}
+			);
+			return "flipped";
+		}
+
+		// No existing vote — insert
+		var newId = lCase( createGUID() );
+		queryExecute(
+			"INSERT INTO Votes (id, users_id, #arguments.target.col#, vote)
+			 VALUES (UUID_TO_BIN(:id), UUID_TO_BIN(:users_id), UUID_TO_BIN(:target_id), :vote)",
+			{
+				"id"        : { value : newId, cfsqltype : "cf_sql_varchar" },
+				"users_id"  : { value : arguments.users_id, cfsqltype : "cf_sql_varchar" },
+				"target_id" : { value : arguments.target.id, cfsqltype : "cf_sql_varchar" },
+				"vote"      : { value : arguments.vote, cfsqltype : "cf_sql_tinyint" }
+			}
+		);
+		return "created";
+	}
 
 	/**
 	 * Resolves the target column name and ID from the dual-target arguments.

@@ -75,6 +75,10 @@ class {
 		}
 
 		var voteValue = val( arguments.req.body.value ?: 0 );
+		if ( voteValue != 1 && voteValue != -1 ) {
+			fail( arguments.res, "value must be 1 or -1", 400 );
+			return;
+		}
 		var uid       = arguments.res.locals.currentUser.id;
 		var Vote      = variables.AppContext.get( "Vote" );
 
@@ -405,6 +409,10 @@ class {
 			return;
 		}
 		var voteValue = val( arguments.req.body.value ?: 0 );
+		if ( voteValue != 1 && voteValue != -1 ) {
+			fail( arguments.res, "value must be 1 or -1", 400 );
+			return;
+		}
 		var uid       = arguments.res.locals.currentUser.id;
 		var Vote      = variables.AppContext.get( "Vote" );
 
