@@ -506,9 +506,7 @@ class accessors="true" {
 	 *
 	 * Results are cached in `dismalCache` under
 	 * `post:{id_short}:comments_tree:{criteriaKey}` where criteriaKey is either
-	 * "all" or the root comment ID. Use `getCommentsTreeWithChildren()` instead
-	 * when you already have a specific comment ID and want to avoid fetching the
-	 * full comment list.
+	 * "all" or the root comment ID.
 	 *
 	 * @param {struct} criteria - Optional. Pass `{ root: "<comment_id>" }` to
 	 *                            return only the subtree rooted at that comment.
@@ -541,100 +539,6 @@ class accessors="true" {
 		);
 
 		return commentTree;
-	}
-
-	/**
-	 * Returns a single comment and all its descendants as a nested tree, using a
-	 * server-side recursive CTE to fetch only the relevant subtree.
-	 *
-	 * Prefer this over `getCommentsTree( { root: id } )` when you have a specific
-	 * comment ID and don't need the rest of the post's comments — it avoids
-	 * fetching the full comment list. Results are not cached.
-	 *
-	 * @param {struct} criteria - Must contain `id`: the full UUID of the root comment.
-	 * @return {struct} The root comment struct with a nested `children` array,
-	 *                  or `{ id, id_short: "", children: [] }` if not found.
-	 */
-	function getCommentsTreeWithChildren(required struct criteria){
-		var sql = "
-			WITH RECURSIVE comment_tree AS (
-				-- seed: the parent comment (depth = 0)
-				SELECT
-					c.id,
-					c.parent_id,
-					c.posts_id,
-					c.users_id,
-					c.body,
-					UNIX_TIMESTAMP(c.created_at) AS created_utc,
-					UNIX_TIMESTAMP(c.updated_at) AS updated_utc,
-					c.deleted,
-					0 AS depth
-				FROM dismal.Comments AS c
-				WHERE c.id = UUID_TO_BIN(:id)
-				UNION ALL
-				-- recurse: children of any row already in the tree
-				SELECT
-					c.id,
-					c.parent_id,
-					c.posts_id,
-					c.users_id,
-					c.body,
-					UNIX_TIMESTAMP(c.created_at) AS created_utc,
-					UNIX_TIMESTAMP(c.updated_at) AS updated_utc,
-					c.deleted,
-					ct.depth + 1 AS depth
-				FROM dismal.Comments AS c
-				JOIN comment_tree AS ct
-					ON c.parent_id = ct.id
-			)
-			SELECT
-			BIN_TO_UUID(ct.id)                       AS id,
-			LEFT(BIN_TO_UUID(ct.id), 8)              AS id_short,
-			BIN_TO_UUID(ct.parent_id)                AS parent_id,
-			BIN_TO_UUID(ct.posts_id)                 AS posts_id,
-			ct.created_utc,
-			ct.updated_utc,
-			BIN_TO_UUID(ct.users_id)                 AS users_id,
-			u.user_name,
-			ct.body,
-			ct.deleted,
-			ct.depth,
-			COALESCE(VS.vote_score, 0) AS vote_score,
-			COALESCE(VS.vote_up,    0) AS vote_up,
-			COALESCE(VS.vote_down,  0) AS vote_down
-			FROM comment_tree AS ct
-			LEFT JOIN (
-				SELECT
-					V.comments_id,
-					SUM(V.vote)      AS vote_score,
-					SUM(V.vote =  1) AS vote_up,
-					SUM(V.vote = -1) AS vote_down
-				FROM Votes V
-				WHERE V.comments_id IN (SELECT id FROM comment_tree)
-				GROUP BY V.comments_id
-			) VS ON VS.comments_id = ct.id
-			JOIN dismal.Users AS u
-			ON u.id = ct.users_id
-			ORDER BY
-			ct.created_utc;
-		";
-		var qParams = {
-			'id': { value: criteria.id, cfsqltype: "cf_sql_varchar" }
-		}
-		var comments = queryExecute(sql, qParams, {returnType: "array"});
-		if (!comments.len()) return { "id": criteria.id, "id_short": "", "children": [] };
-		var rootEl = comments.filter(el => {
-			return el.id == criteria.id;
-		});
-		if (!rootEl.len()) return { "id": criteria.id, "id_short": "", "children": [] };
-		var childMap = {};
-		comments.each( ( c ) => {
-			if ( len( c.parent_id ) ) {
-				if ( !childMap.keyExists( c.parent_id ) ) childMap[ c.parent_id ] = [];
-				childMap[ c.parent_id ].append( c );
-			}
-		} );
-		return buildCommentTree(comments, rootEl[1], 0, childMap);
 	}
 
 	/**
