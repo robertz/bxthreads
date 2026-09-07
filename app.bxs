@@ -114,13 +114,21 @@ app.use( sessionMiddleware.session( {
 /**
  * Realtime layer (Phase 6) — one shared STOMP broker for comment/vote/notification broadcasts
  * (ws/Broadcast.bx) and forum presence (ws/Presence.bx). See ws/Stomp.bx for the
- * authenticate()/authorize() identity model.
+ * authenticate()/authorize()/onSend() identity and presence-heartbeat model.
+ *
+ * stompBuilder.setPresence() runs after Presence exists (which itself needs the built broker, for
+ * its own stomp.send() broadcasts — a real circular dependency, broken by wiring it in after the
+ * fact) but still strictly before app.listen() below ever accepts a connection, so onSend() never
+ * sees it unset for a real client.
  */
-stomp = new "ws.Stomp"( sessionMiddleware ).build()
+stompBuilder = new "ws.Stomp"( sessionMiddleware )
+stomp = stompBuilder.build()
 app.ws( "/stomp", stomp.handler() )
 AppContext.register( "Stomp", stomp )
 AppContext.register( "Broadcast", new "ws.Broadcast"( stomp ) )
-AppContext.register( "Presence", new "ws.Presence"( stomp ) )
+presence = new "ws.Presence"( stomp )
+AppContext.register( "Presence", presence )
+stompBuilder.setPresence( presence )
 
 // Mounted before RequestContext's page-bootstrap middleware below — every /api/* route handler
 // sends its own response directly (no next()), so a matching request never reaches that

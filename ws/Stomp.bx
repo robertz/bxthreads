@@ -3,9 +3,12 @@
  * comment/vote/notification broadcasts (ws/Broadcast.bx) and forum presence (ws/Presence.bx).
  *
  * Destinations (direct exchange, exact-match — no wildcard bindings needed):
- *   post.{id_short}   — comment-added, comment-vote-changed, post-vote-changed for that post.
+ *   post.{id_short}   — comment-added, comment-vote-changed, post-vote-changed, post-presence
+ *                       pushed here; also where the post-detail page SENDs its presence heartbeat
+ *                       (absorbed by onSend() below, never relayed as-is — see its own docblock).
  *   user.{usersId}    — notification-received for that user's own notification badge.
- *   forum.{id_short}  — forum-presence, the live viewer count for that forum.
+ *   forum.{id_short}  — forum-presence pushed here; also where a forum page SENDs its presence
+ *                       heartbeat, same absorb-and-rebroadcast handling as post. above.
  *
  * Identity: app.ws() routes sit outside the app.use() middleware chain entirely — no Session
  * middleware runs for a WebSocket upgrade — so authenticate() reads the session cookie directly
@@ -20,14 +23,27 @@ class {
 	function init( required any sessionStore ) {
 		variables.sessionStore = arguments.sessionStore;
 		variables.sessionCookieName = "dt_sid";
+		variables.presence = javacast( "null", "" );
 		return this;
+	}
+
+	/**
+	 * Wires the presence service in after both this broker and ws.Presence exist — app.bxs has to
+	 * construct Presence with the broker build() returns (for its own stomp.send() broadcasts),
+	 * so the broker can't be handed a fully-formed Presence at construction time. Called once,
+	 * synchronously, before app.listen() ever accepts a connection, so onSend() below never sees
+	 * variables.presence unset for a real client.
+	 */
+	function setPresence( required any presence ) {
+		variables.presence = arguments.presence;
 	}
 
 	function build() {
 		var stomp = this;
 		return boxExpressStomp( {
 			authenticate: ( login, passcode, host, connection, connectionMetadata ) => stomp.authenticate( connection, connectionMetadata ),
-			authorize: ( login, destination, access, connection, connectionMetadata ) => stomp.authorize( destination, connectionMetadata )
+			authorize: ( login, destination, access, connection, connectionMetadata ) => stomp.authorize( destination, connectionMetadata ),
+			onSend: ( destination, body, headers, connection, connectionMetadata ) => stomp.onSend( destination, connectionMetadata )
 		} );
 	}
 
@@ -35,7 +51,9 @@ class {
 	 * Always succeeds — CONNECT never fails outright, since anonymous visitors are allowed to
 	 * subscribe to post.* and forum.* (just not user.*). Populates connectionMetadata.uid/
 	 * isIdentified from the real session cookie so authorize() below has something trustworthy
-	 * to check, regardless of what the CONNECT frame's login/passcode headers claim.
+	 * to check, regardless of what the CONNECT frame's login/passcode headers claim. sessionId
+	 * itself is stashed too — onSend() below needs it as presence's per-viewer dedup key, the same
+	 * role req.sessionID played for the REST presence-ping routes this replaced.
 	 */
 	function authenticate( connection, connectionMetadata ) {
 		var defaultUserId = new "lib.AppContext"().get( "Config" ).getDefaultUser();
@@ -45,6 +63,34 @@ class {
 
 		arguments.connectionMetadata.uid = uid;
 		arguments.connectionMetadata.isIdentified = ( uid != defaultUserId );
+		arguments.connectionMetadata.sessionId = sessionId;
+		return true;
+	}
+
+	/**
+	 * Absorbs a presence heartbeat SEND (see public/assets/js/realtime.js's sendPresencePing()/
+	 * sendPostPresencePing()) — nothing gets relayed to subscribers as a raw ping; Presence.ping()/
+	 * pingPost() update TTL bookkeeping and broadcast a *computed* count over the same destination
+	 * instead. Reuses the post./forum. destinations the client already subscribes to for
+	 * comment/vote/presence broadcasts rather than minting dedicated ping-only destinations — the
+	 * only client SEND traffic on either currently is this heartbeat. authorize() above already
+	 * gated this SEND against the same forum-visibility check subscribing to it requires, so no
+	 * separate check is needed here. Any other destination falls through (return true) to the
+	 * broker's normal verbatim-relay behavior, matching what happens with no onSend configured.
+	 */
+	function onSend( destination, connectionMetadata ) {
+		if ( isNull( variables.presence ) ) return true;
+		var sessionKey = arguments.connectionMetadata.sessionId ?: "";
+		if ( !len( sessionKey ) ) return false;
+
+		if ( arguments.destination.left( 6 ) == "forum." ) {
+			variables.presence.ping( arguments.destination.mid( 7, arguments.destination.len() - 6 ), sessionKey );
+			return false;
+		}
+		if ( arguments.destination.left( 5 ) == "post." ) {
+			variables.presence.pingPost( arguments.destination.mid( 6, arguments.destination.len() - 5 ), sessionKey );
+			return false;
+		}
 		return true;
 	}
 

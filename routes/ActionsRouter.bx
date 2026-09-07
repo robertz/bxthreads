@@ -16,7 +16,6 @@ class {
 		variables.Session    = variables.AppContext.get( "Session" );
 		variables.Renderer   = new "lib.CommentRenderer"();
 		variables.Broadcast  = variables.AppContext.get( "Broadcast" );
-		variables.Presence   = variables.AppContext.get( "Presence" );
 
 		var r = arguments.router;
 
@@ -44,8 +43,6 @@ class {
 		r.delete( "/comments/:id_short", safeAction( ( req, res ) => deleteCommentAction( req, res ) ) );
 
 		r.post( "/forums/:display/subscribe", safeAction( ( req, res ) => toggleSubscribeAction( req, res ) ) );
-		r.post( "/forums/:display/presence-ping", safeAction( ( req, res ) => presencePingAction( req, res ) ) );
-		r.post( "/posts/:id_short/presence-ping", safeAction( ( req, res ) => postPresencePingAction( req, res ) ) );
 		r.put( "/forums/:display", safeAction( ( req, res ) => saveForumDetailsAction( req, res ) ) );
 		r.post( "/forums/:display/privacy-toggle", safeAction( ( req, res ) => toggleForumPrivacyAction( req, res ) ) );
 		r.post( "/forums/:display/moderators", safeAction( ( req, res ) => addForumModeratorAction( req, res ) ) );
@@ -505,37 +502,6 @@ class {
 		var subscribed = user.handleSubscription( forum.getId() );
 		forum.invalidateCache( forum.getId_short() );
 		ok( arguments.res, { subscribed: subscribed } );
-	}
-
-	/**
-	 * No requireAuth() gate — presence counts anonymous visitors too (dedupe by session, not
-	 * identity; see ws/Presence.bx). Not X-Api-Key gated either: this is a same-origin
-	 * fire-and-forget heartbeat from the forum page's own JS, not an admin/integration surface.
-	 */
-	function presencePingAction( req, res ) {
-		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
-		if ( !forum.hasLoaded() ) {
-			fail( arguments.res, "Forum not found", 404 );
-			return;
-		}
-		var count = variables.Presence.ping( forum.getId_short(), arguments.req.sessionID );
-		ok( arguments.res, { count: count } );
-	}
-
-	/**
-	 * Same "no requireAuth() gate" reasoning as presencePingAction() above — anonymous readers
-	 * count as viewers too. Broadcasts on the post's own `post.{id_short}` STOMP destination, the
-	 * same one the post-detail page already subscribes to for comment/vote broadcasts, so no new
-	 * client-side subscription is needed for this.
-	 */
-	function postPresencePingAction( req, res ) {
-		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
-		if ( !post.hasLoaded() ) {
-			fail( arguments.res, "Post not found", 404 );
-			return;
-		}
-		var count = variables.Presence.pingPost( post.getId_short(), arguments.req.sessionID );
-		ok( arguments.res, { count: count } );
 	}
 
 	function saveForumDetailsAction( req, res ) {

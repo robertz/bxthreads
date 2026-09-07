@@ -93,14 +93,23 @@
 		if (el) el.textContent = body.count + " viewing now";
 	}
 
+	// Sent as a STOMP SEND on the same post./forum. destination the page already subscribes to for
+	// broadcasts — the server absorbs it (ws/Stomp.bx's onSend()) and pushes back a computed
+	// count, never relaying the raw ping itself. Guarded by client.connected since the periodic
+	// setInterval below keeps firing across reconnects/disconnects; publish() throws if called
+	// while not connected, and a missed heartbeat is harmless (presence has its own TTL).
 	function sendPresencePing() {
-		if (!ctx.forum_display) return;
-		fetch(`/forums/${encodeURIComponent(ctx.forum_display)}/presence-ping`, { method: "POST" }).catch(() => {});
+		if (!ctx.forum_id_short || !client.connected) return;
+		try {
+			client.publish({ destination: "forum." + ctx.forum_id_short, body: "" });
+		} catch (e) { /* best-effort */ }
 	}
 
 	function sendPostPresencePing() {
-		if (!ctx.post_id_short) return;
-		fetch(`/posts/${ctx.post_id_short}/presence-ping`, { method: "POST" }).catch(() => {});
+		if (!ctx.post_id_short || !client.connected) return;
+		try {
+			client.publish({ destination: "post." + ctx.post_id_short, body: "" });
+		} catch (e) { /* best-effort */ }
 	}
 
 	setInterval(sendPresencePing, 30000);
