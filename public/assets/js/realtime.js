@@ -4,13 +4,19 @@
 // cbwire's own realtime.js (see .claude/plans/typed-seeking-frog.md, Phase 6). Subscribes to this
 // page's destination(s) on connect and, on message, patches just the affected DOM via a small
 // REST fetch — no SPA navigation exists in this app (every route is a full page load), so unlike
-// the source app's realtime.js there is no wire:navigate resync: one connection, set up once per
-// page load, is enough.
+// the source app's realtime.js there is no wire:navigate resync. There IS a resync on a STOMP
+// *reconnect* though (see onConnect below) — a dropped connection can miss broadcasts a
+// wire:navigate-style resync would otherwise never need to worry about.
 (function () {
 	if (!window.WebSocket || !window.StompJs) return;
 
 	const ctx = window.dismal || {};
 	const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+
+	// Set once the FIRST onConnect has run, so a later reconnect (server restart, network blip —
+	// StompJs's own reconnectDelay handles retrying the connection itself) is distinguishable from
+	// the initial one below.
+	let hasConnectedBefore = false;
 
 	const client = new window.StompJs.Client({
 		brokerURL: protocol + "//" + window.location.host + "/stomp",
@@ -32,6 +38,17 @@
 				client.subscribe("forum." + ctx.forum_id_short, handleForumMessage);
 				sendPresencePing();
 			}
+			// A reconnect re-subscribes to everything above, but any comment-added/vote-changed
+			// broadcasts that happened during the gap were never received — nothing else would
+			// ever re-fetch them since every route here is a full page load, not a SPA with its
+			// own resync-on-navigate. Skipped on the very first connect (right after a full page
+			// render, so there's nothing missed yet) to avoid a redundant fetch of data the page
+			// already has.
+			if (hasConnectedBefore) {
+				refreshComments();
+				refreshPostVote();
+			}
+			hasConnectedBefore = true;
 		}
 	});
 
