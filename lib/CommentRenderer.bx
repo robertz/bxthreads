@@ -52,14 +52,18 @@ class {
 	 * @param postAuthorId  Full UUID of the post's own author — used only for the "OP" badge.
 	 */
 	function renderNode( required struct node, required string currentUserId, boolean isModerator = false, string postAuthorId = "", numeric depth = 0 ) {
-		var isAuthor  = arguments.node.users_id == arguments.currentUserId;
-		var canManage = isAuthor || arguments.isModerator;
-		var isOP      = len( arguments.postAuthorId ) && arguments.node.users_id == arguments.postAuthorId;
+		var isDeleted = arguments.node.deleted ? true : false;
+		var isAuthor  = !isDeleted && arguments.node.users_id == arguments.currentUserId;
+		var canManage = isAuthor || ( !isDeleted && arguments.isModerator );
+		var isOP      = !isDeleted && len( arguments.postAuthorId ) && arguments.node.users_id == arguments.postAuthorId;
 
 		var html = '<article class="c-comment" id="c-' & encodeForHTMLAttribute( arguments.node.id_short ) & '" data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" data-depth="' & arguments.depth & '">';
 
 		html &= '<div class="c-comment__header">';
 		html &= '<button type="button" class="c-comment__collapse" data-comment-collapse aria-label="Collapse thread">&minus;</button>';
+		// A deleted comment's body is masked below, but the author link stays — matches the
+		// client-side delete handler (public/assets/js/actions.js) which only ever swaps the
+		// body text, never the author, so a fresh page load doesn't look any different.
 		html &= '<a href="/u/' & encodeForURL( arguments.node.user_name ) & '" class="c-comment__author">' & encodeForHTML( arguments.node.user_name ) & '</a>';
 		if ( isOP ) {
 			html &= '<span class="c-comment__op-badge">OP</span>';
@@ -68,31 +72,35 @@ class {
 		html &= '<span class="c-comment__timestamp ts-display" data-ts="' & encodeForHTMLAttribute( arguments.node.created_utc ) & '">' & momentFrom( arguments.node.created_utc ) & '</span>';
 		html &= '</div>';
 
-		html &= '<div class="c-comment__content" data-comment-body>' & enhanceAnchorsInHtml( getSafeHTML( markdown( arguments.node.body ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) & '</div>';
+		if ( isDeleted ) {
+			html &= '<div class="c-comment__content" data-comment-body>[deleted]</div>';
+		} else {
+			html &= '<div class="c-comment__content" data-comment-body>' & enhanceAnchorsInHtml( getSafeHTML( markdown( arguments.node.body ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) & '</div>';
 
-		html &= '<div class="c-comment__actions">';
-		html &= '<span class="c-post__vote-pill">';
-		html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-up data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>';
-		html &= '<span class="c-vote__score c-comment__vote-score" data-vote-score aria-label="Score: ' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '">' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '</span>';
-		html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-down data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>';
-		html &= '</span>';
-		if ( len( arguments.currentUserId ) ) {
-			html &= '<span class="c-comment__action-sep" aria-hidden="true"></span>';
-			html &= '<button type="button" class="c-comment__action" data-reply-toggle data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Reply</button>';
-		}
-		if ( canManage ) {
-			html &= '<button type="button" class="c-comment__action" data-edit-toggle data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Edit</button>';
-			html &= '<button type="button" class="c-comment__action c-comment__action--danger" data-comment-delete data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Delete</button>';
-		}
-		html &= '</div>';
-
-		if ( len( arguments.currentUserId ) ) {
-			html &= '<form class="c-comment__reply" data-reply-form data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" style="display:none">';
-			html &= '<textarea class="c-comment__textarea" rows="2" placeholder="Reply..." required></textarea>';
-			html &= '<div class="c-comment__actions c-comment__reply-actions">';
-			html &= '<button type="submit" class="c-comment__pill c-comment__button">Post</button>';
+			html &= '<div class="c-comment__actions">';
+			html &= '<span class="c-post__vote-pill">';
+			html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-up data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>';
+			html &= '<span class="c-vote__score c-comment__vote-score" data-vote-score aria-label="Score: ' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '">' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '</span>';
+			html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-down data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>';
+			html &= '</span>';
+			if ( len( arguments.currentUserId ) ) {
+				html &= '<span class="c-comment__action-sep" aria-hidden="true"></span>';
+				html &= '<button type="button" class="c-comment__action" data-reply-toggle data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Reply</button>';
+			}
+			if ( canManage ) {
+				html &= '<button type="button" class="c-comment__action" data-edit-toggle data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Edit</button>';
+				html &= '<button type="button" class="c-comment__action c-comment__action--danger" data-comment-delete data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Delete</button>';
+			}
 			html &= '</div>';
-			html &= '</form>';
+
+			if ( len( arguments.currentUserId ) ) {
+				html &= '<form class="c-comment__reply" data-reply-form data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" style="display:none">';
+				html &= '<textarea class="c-comment__textarea" rows="2" placeholder="Reply..." required></textarea>';
+				html &= '<div class="c-comment__actions c-comment__reply-actions">';
+				html &= '<button type="submit" class="c-comment__pill c-comment__button">Post</button>';
+				html &= '</div>';
+				html &= '</form>';
+			}
 		}
 
 		html &= '<div class="c-comment__children" data-comment-children>';
