@@ -77,11 +77,20 @@ class {
 		} else {
 			html &= '<div class="c-comment__content" data-comment-body>' & enhanceAnchorsInHtml( getSafeHTML( markdown( arguments.node.body ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) & '</div>';
 
+			// Matches FeedItemRenderer.bx / views/post/view.bxm's own post-vote-pill markup: the
+			// active up/down state has to be baked into the initial render (not left to the
+			// post-click JS alone), or a page load/reload shows every comment as un-voted even
+			// when the viewer already voted on it.
+			var userVote   = len( arguments.currentUserId ) ? new "lib.AppContext"().get( "Vote" ).getUserVote( arguments.currentUserId, "", arguments.node.id ) : 0;
+			var upClass    = userVote == 1  ? "c-vote--active-up"   : "";
+			var downClass  = userVote == -1 ? "c-vote--active-down" : "";
+			var scoreClass = userVote == 1  ? "c-vote__score--up"   : ( userVote == -1 ? "c-vote__score--down" : "" );
+
 			html &= '<div class="c-comment__actions">';
 			html &= '<span class="c-post__vote-pill">';
-			html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-up data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>';
-			html &= '<span class="c-vote__score c-comment__vote-score" data-vote-score aria-label="Score: ' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '">' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '</span>';
-			html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-down data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>';
+			html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote ' & upClass & '" data-vote-up data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>';
+			html &= '<span class="c-vote__score c-comment__vote-score ' & scoreClass & '" data-vote-score aria-label="Score: ' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '">' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '</span>';
+			html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote ' & downClass & '" data-vote-down data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>';
 			html &= '</span>';
 			if ( len( arguments.currentUserId ) ) {
 				html &= '<span class="c-comment__action-sep" aria-hidden="true"></span>';
@@ -94,7 +103,7 @@ class {
 			html &= '</div>';
 
 			if ( len( arguments.currentUserId ) ) {
-				html &= '<form class="c-comment__reply" data-reply-form data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" style="display:none">';
+				html &= '<form class="c-comment__reply" data-reply-form data-parent-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" style="display:none">';
 				html &= '<textarea class="c-comment__textarea" rows="2" placeholder="Reply..." required></textarea>';
 				html &= '<div class="c-comment__actions c-comment__reply-actions">';
 				html &= '<button type="submit" class="c-comment__pill c-comment__button">Post</button>';

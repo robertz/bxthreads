@@ -170,11 +170,23 @@ class {
 			fail( arguments.res, "Post not found", 404 );
 			return;
 		}
-		var body     = trim( arguments.req.body.body ?: "" );
-		var parentId = arguments.req.body.parent_id ?: "";
+		var body          = trim( arguments.req.body.body ?: "" );
+		var parentIdShort = arguments.req.body.parent_id ?: "";
 		if ( !len( body ) ) {
 			fail( arguments.res, "body is required", 400 );
 			return;
+		}
+
+		// Client sends the parent's short id (id_short); Comments.parent_id stores the full UUID,
+		// so it has to be resolved here rather than saved as-is.
+		var parentId = "";
+		if ( len( parentIdShort ) ) {
+			var parentLookup = new "models.beans.Comment"().getByIdShort( parentIdShort );
+			if ( !parentLookup.hasLoaded() ) {
+				fail( arguments.res, "Parent comment not found", 404 );
+				return;
+			}
+			parentId = parentLookup.getId();
 		}
 
 		var uid = arguments.res.locals.currentUser.id;
@@ -423,6 +435,15 @@ class {
 				variables.AppContext.get( "AchievementService" ).evaluate( comment.getUsers_id() );
 			}
 		}
+
+		// Post.getCommentsTree() bakes each comment's vote_score into its cached tree at read
+		// time; Vote.toggle() only clears its own vote:stats/uservote cache keys (comment-agnostic
+		// of the post they belong to), so the tree cache has to be invalidated here or every
+		// other tab's post-refresh broadcast keeps re-rendering the pre-vote score.
+		var postIdShort = left( comment.getPosts_id(), 8 );
+		cache( "dismalCache" ).getKeys()
+			.filter( key => key.startsWith( "post:#postIdShort#:comments_tree" ) )
+			.each( key => cache( "dismalCache" ).clear( key ) );
 
 		variables.Broadcast.commentVoteChanged( left( comment.getPosts_id(), 8 ) );
 
