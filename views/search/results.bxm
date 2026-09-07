@@ -1,0 +1,66 @@
+<bx:output>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-2 order-1 order-lg-2">
+
+			<bx:if data.searchForum.len()>
+				<h1 class="h5 mb-3">
+					Results for <em>&ldquo;#encodeForHTML( data.searchQuery )#&rdquo;</em>
+					in <a href="/f/#encodeForURL( data.searchForum )#" class="text-white text-decoration-none">f/#encodeForHTML( data.searchForum )#</a>
+					&mdash; <a href="/search?q=#encodeForURL( data.searchQuery )#" class="c-search-results__global-link">search all</a>
+				</h1>
+			<bx:else>
+				<h1 class="h5 mb-3">Results for <em>&ldquo;#encodeForHTML( data.searchQuery )#&rdquo;</em></h1>
+			</bx:if>
+
+			<bx:if data.searchForums.len()>
+				<section class="c-search-forums mb-4" aria-label="Matching forums">
+					<h2 class="c-search-forums__heading">Communities</h2>
+					<ul class="c-search-forums__list list-unstyled">
+						<bx:loop array="#data.searchForums#" index="sf">
+							<li class="c-search-forums__item">
+								<a href="/f/#encodeForURL( sf.display )#" class="c-search-forums__link">
+									<span class="c-search-forums__name">f/#encodeForHTML( sf.display )#</span>
+									<bx:if sf.about.len()>
+										<span class="c-search-forums__about text-muted">&mdash; #encodeForHTML( sf.about )#</span>
+									</bx:if>
+								</a>
+							</li>
+						</bx:loop>
+					</ul>
+				</section>
+			</bx:if>
+
+			<bx:if !data.feed.len()>
+				<p class="text-muted">No matching posts.</p>
+			</bx:if>
+			<div data-feed-list>
+				<bx:loop array="#data.feed#" index="post">
+					#new "lib.FeedItemRenderer"().renderCard( post, data.isIdentified ? data.currentUser.id : "", data.isIdentified && ( data.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) || data.currentUser.permissions.listFind( "FORUM_MODERATOR_" & uCase( post.forum ) ) ) )#
+				</bx:loop>
+			</div>
+			<bx:if data.hasMore ?: false>
+				<div
+					data-feed-sentinel
+					data-feed-mode="offset"
+					data-feed-endpoint="/search/more?q=#encodeForURL( data.searchQuery )#&forum=#encodeForURL( data.searchForum )#"
+					data-feed-offset="#data.feed.len()#"
+					style="height:1px;"
+				></div>
+			</bx:if>
+			<div id="feed-end" class="feed-end" data-feed-end style="#data.hasMore ?: false ? 'display:none;' : ''#">
+				<span class="feed-end__text">&mdash;&nbsp;end of results&nbsp;&mdash;</span>
+			</div>
+			<div class="feed-loader" data-feed-loader style="display:none;">
+				<div class="feed-loader__spinner"></div>
+			</div>
+		</div>
+		<div class="d-none d-lg-block col-lg-3 p-2 order-lg-3">
+			#view( "widgets/recently_viewed" )#
+		</div>
+	</div>
+</div>
+</bx:output>

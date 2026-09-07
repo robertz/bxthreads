@@ -1,0 +1,20 @@
+/**
+ * Replaces the ColdBox `logger` DSL injection (`inject="logbox:logger:{this}"`) — the single
+ * most-injected dependency in the source app (14 occurrences) after defaultUser. Thin wrapper
+ * over BoxLang's own writeLog(), no LogBox config needed.
+ */
+class {
+
+	function info( required string message ) {
+		writeLog( text = arguments.message, log = "application", type = "information" );
+	}
+
+	function warn( required string message ) {
+		writeLog( text = arguments.message, log = "application", type = "warning" );
+	}
+
+	function error( required string message ) {
+		writeLog( text = arguments.message, log = "application", type = "error" );
+	}
+
+}

@@ -1,0 +1,426 @@
+/**
+ * Admin bean providing data access for the moderator dashboard.
+ *
+ * All read methods cache their results in `dismalCache` indefinitely; the
+ * caller is responsible for clearing the relevant key when the underlying
+ * data changes. Cache keys used by this bean:
+ *
+ *   admin:forums        — all active forums with aggregates (also consumed by
+ *                         RequestService on every request for the nav forum list)
+ *   admin:recent_posts  — up to 50 most recent non-deleted posts
+ *   admin:deleted_posts — up to 50 most recently soft-deleted posts
+ *   admin:top_viewed    — top 10 posts by view count in the last 24 hours
+ *
+ * Non-query utility:
+ *   generateUsername() — produces random adjective-noun display names from
+ *                        the word lists initialised in init().
+ */
+class {
+
+	/**
+	 * Initialises the Admin bean with word lists used by generateUsername().
+	 *
+	 * The adjectives and nouns arrays (~130 entries each) are stored on the bean
+	 * rather than as constants so they are available to every instance without
+	 * requiring a separate configuration file.
+	 *
+	 * @return {Admin} This instance.
+	 */
+	function init(){
+		variables.adjectives = [
+			"ancient","agile","amber","arcane","atomic","august","auspicious","azure","brave","brazen",
+			"bright","brisk","burning","calm","celestial","cerulean","chaotic","chromatic","clever","cosmic",
+			"crimson","crystal","cunning","dauntless","dazzling","deep","dexterous","divine","drifting","dusky",
+			"eager","electric","elemental","elusive","emerald","enchanted","epic","ethereal","fearless","feral",
+			"fiery","fierce","fleet","floating","fluent","frozen","frosted","galactic","gentle","ghostly",
+			"gilded","glacial","gleaming","gloomy","golden","grand","hidden","hollow","hyper","icy",
+			"immortal","infinite","iron","jaded","jovial","keen","luminous","lunar","lush","magnetic",
+			"mammoth","mighty","misty","molten","mystic","nameless","neon","noble","nocturnal","northern",
+			"obsidian","oceanic","onyx","opal","orbital","phantom","pinnacle","plasma","prime","prismatic",
+			"quiet","quicksilver","radiant","rapid","ravenous","reckless","restless","rigid","roaring","rough",
+			"ruby","runic","sacred","scarlet","serene","shadow","shimmering","silent","silver","slumbering",
+			"solar","sonic","spectral","spiral","spirit","splendid","spooky","steel","stellar","stormborn",
+			"stormy","stranded","strange","sublime","swift","titanic","tranquil","twilight","ultra","uncanny",
+			"velvet","vicious","vivid","vorpal","wandering","whispering","wild","winding","wired","wise",
+			"wooden","wraith","zealous","zenith","zero","zinc","zonal"
+		];
+		variables.nouns = [
+			"albatross","alpha","anvil","archer","asteroid","badger","bandit","basilisk","bear","beetle",
+			"bison","blade","blizzard","bolt","buffalo","bull","cat","centaur","cerberus","chameleon",
+			"cobra","comet","coyote","cricket","cyclone","daemon","dragon","drifter","eagle","ember",
+			"falcon","ferret","flame","fox","gale","ghost","giant","glider","gnome","golem",
+			"gorilla","griffin","guardian","hawk","hydra","jaguar","jester","juggernaut","keeper","kraken",
+			"lion","lizard","mage","mammoth","manticore","mariner","meteor","minotaur","monarch","monkey",
+			"nebula","nightblade","nightmare","nomad","nymph","octopus","ogre","onyx","oracle","otter",
+			"owl","panther","pegasus","phantom","phoenix","pirate","puma","python","quartz","quokka",
+			"ranger","raven","reaper","rhino","robot","ronin","sabertooth","sailor","serpent","shark",
+			"shifter","slayer","sparrow","spider","sprite","stallion","storm","strider","tiger","torpedo",
+			"turtle","unicorn","viper","vortex","warden","warlock","warrior","weasel","whale","wolf",
+			"wyrm","wyvern","yeti","zephyr","zenmaster","zombie"
+		];
+		return this;
+	}
+
+	/**
+	 * Returns all active (non-deleted) forums with computed aggregate stats.
+	 *
+	 * Executes a multi-CTE query joining subscriber counts, post counts, comment
+	 * counts, and moderator name lists for every active forum in a single round-trip.
+	 * Moderators are identified via the `permissions_id` FK on the Forums row.
+	 *
+	 * Result is cached under `admin:forums` (indefinite TTL). This same cache key
+	 * is consumed by RequestService on every request to populate the nav forum list,
+	 * so the TTL is effectively managed by mutation-triggered invalidation.
+	 *
+	 * @return {array} Array of forum structs: id, id_short, created_at, updated_at,
+	 *                 display, icon, about, permissions_id (UUID string), owner (username),
+	 *                 subscribers, posts, comments, moderator_list (comma-separated usernames).
+	 */
+	function getForums(){
+		return cache( "dismalCache" ).getOrSet(
+			"admin:forums",
+			() => {
+				var sql = "
+					WITH ActiveForums AS (
+						SELECT
+							F.id,
+							F.id_short,
+							F.created_at,
+							F.updated_at,
+							F.display,
+							F.owner,
+							F.icon,
+							F.about,
+							F.deleted,
+							F.permissions_id,
+							F.is_private
+						FROM Forums F
+						WHERE F.deleted = 0
+					),
+					SubscribersCount AS (
+						SELECT
+							UF.forums_id,
+							COUNT(*) AS subscriber_count
+						FROM UsersForums UF
+						JOIN ActiveForums AF ON AF.id = UF.forums_id
+						GROUP BY UF.forums_id
+					),
+					PostsCount AS (
+						SELECT
+							P.forums_id,
+							COUNT(*) AS post_count
+						FROM Posts P
+						JOIN ActiveForums AF ON AF.id = P.forums_id
+						WHERE P.deleted = FALSE
+						GROUP BY P.forums_id
+					),
+					CommentsCount AS (
+						SELECT
+							C.forums_id,
+							COUNT(*) AS comment_count
+						FROM Comments C
+						JOIN ActiveForums AF ON AF.id = C.forums_id
+						WHERE C.deleted = FALSE
+						GROUP BY C.forums_id
+					),
+					ModeratorList AS (
+						SELECT
+							AF.id AS forums_id,
+							GROUP_CONCAT(U.user_name) AS moderator_list
+						FROM ActiveForums AF
+						JOIN Permissions P ON P.id = AF.permissions_id
+						JOIN UsersPermissions UP ON UP.permissions_id = P.id
+						JOIN Users U ON U.id = UP.users_id
+						GROUP BY AF.id
+					)
+					SELECT
+						BIN_TO_UUID(AF.id) AS id,
+						AF.id_short,
+						AF.created_at,
+						AF.updated_at,
+						AF.display,
+						AF.icon,
+						AF.about,
+						BIN_TO_UUID(AF.permissions_id) AS permissions_id,
+						AF.is_private,
+						U.user_name AS owner,
+						COALESCE(SC.subscriber_count, 0) AS subscribers,
+						COALESCE(PC.post_count, 0) AS posts,
+						COALESCE(CC.comment_count, 0) AS comments,
+						COALESCE(ML.moderator_list, '') AS moderator_list
+					FROM ActiveForums AF
+					JOIN Users U ON U.id = AF.owner
+					LEFT JOIN SubscribersCount SC ON SC.forums_id = AF.id
+					LEFT JOIN PostsCount PC ON PC.forums_id = AF.id
+					LEFT JOIN CommentsCount CC ON CC.forums_id = AF.id
+					LEFT JOIN ModeratorList ML ON ML.forums_id = AF.id
+					ORDER BY AF.display;
+				";
+				return queryExecute( sql, {}, { returnType: "array" } );
+			}
+		);
+	}
+
+	/**
+	 * Returns all post view history records with user, post, and forum context.
+	 * Used by the admin dashboard to show a real-time view log. Not cached.
+	 *
+	 * @return {array} Array of history structs: user_name, forum (display name),
+	 *                 id_short, title, viewed (UNIX timestamp). Ordered newest first.
+	 */
+	function getPostHistory(){
+		var sql = "
+			SELECT
+				U.user_name,
+				F.display AS forum,
+				P.id_short,
+				P.title,
+				UNIX_TIMESTAMP(H.created_at) AS viewed
+			FROM History H
+			JOIN Users U ON H.users_id = U.id
+			JOIN Posts P ON H.posts_id = P.id
+			JOIN Forums F ON P.forums_id = F.id
+			ORDER BY H.created_at DESC
+		";
+		return queryExecute( sql, {}, { returnType: "array" } );
+	}
+
+	/**
+	 * Returns up to 50 of the most recently created non-deleted posts with author
+	 * and forum context. Used by SitemapService and the admin dashboard.
+	 *
+	 * Result is cached under `admin:recent_posts` (indefinite TTL, invalidated by
+	 * Post::createPost() and Post::save()).
+	 *
+	 * @return {array} Array of post structs: id, id_short, created_at, updated_at,
+	 *                 forums_id, users_id, forum (display name), user_name,
+	 *                 title, body, icon, is_private. Ordered newest first.
+	 */
+	function getRecentPosts(numeric limit = 50){
+		var lim = arguments.limit;
+		return cache( "dismalCache" ).getOrSet(
+			"admin:recent_posts",
+			() => {
+				var sql = "
+					SELECT
+						BIN_TO_UUID(P.id)        AS id,
+						P.id_short,
+						P.created_at,
+						P.updated_at,
+						BIN_TO_UUID(P.forums_id) AS forums_id,
+						BIN_TO_UUID(P.users_id)  AS users_id,
+						F.display                AS forum,
+						U.user_name,
+						P.title,
+						P.body,
+						F.icon,
+						F.is_private
+					FROM Posts P
+					JOIN Users U ON P.users_id = U.id
+					JOIN Forums F ON P.forums_id = F.id
+					WHERE P.deleted = 0
+					ORDER BY P.created_at DESC
+					LIMIT :limitVal
+				";
+				return queryExecute(
+					sql,
+					{ limitVal: { value: lim, cfsqltype: "cf_sql_integer" } },
+					{ returnType: "array" }
+				);
+			}
+		);
+	}
+
+	/**
+	 * Generates a random lowercase display name combining one adjective and one noun.
+	 *
+	 * Both words are drawn uniformly at random from the ~130-entry lists in
+	 * variables.adjectives and variables.nouns. An optional trailing number can be
+	 * appended to reduce collision likelihood.
+	 *
+	 * Examples: "fiery-minotaur", "gentle-panther-42", "cosmicdragon"
+	 *
+	 * @param {boolean} hyphenated    Separate words with a hyphen. Default: true.
+	 * @param {boolean} includeNumber Append a random integer 0–numberMax. Default: false.
+	 * @param {numeric} numberMax     Upper bound (inclusive) of the appended number. Default: 9999.
+	 * @return {string} A lowercase random username string.
+	 */
+	function generateUsername(required boolean hyphenated = true, required boolean includeNumber = false, required numeric numberMax = 9999){
+        // Pick random words
+        var adj  = variables.adjectives[ randRange( 1, arrayLen( variables.adjectives ) ) ];
+        var noun = variables.nouns[ randRange( 1, arrayLen( variables.nouns ) ) ];
+
+        // Build username
+        var username = "";
+        if (arguments.hyphenated) {
+            username = adj & "-" & noun;
+
+            if (arguments.includeNumber) {
+                username &= "-" & randRange(0, arguments.numberMax);
+            }
+        } else {
+            username = adj & noun;
+
+            if (arguments.includeNumber) {
+                username &= randRange(0, arguments.numberMax);
+            }
+        }
+
+        return lCase(username);
+	}
+
+	/**
+	 * Returns the top 10 posts by view count over the last 24 hours.
+	 *
+	 * Groups History rows by post, counts views, and joins post/forum data.
+	 * Soft-deleted posts are excluded. Result is cached under `admin:top_viewed`
+	 * (indefinite TTL; stale data is acceptable for this dashboard widget).
+	 *
+	 * @return {array} Array of structs: forum (display name), id_short, title,
+	 *                 view_count. Ordered by view_count descending.
+	 */
+	function getTopViewedPosts(){
+		return cache( "dismalCache" ).getOrSet(
+			"admin:top_viewed",
+			() => {
+				var sql = "
+					SELECT
+						F.display AS forum,
+						P.id_short,
+						P.title,
+						COUNT(*) AS view_count
+					FROM History H
+					JOIN Posts P ON H.posts_id = P.id
+					JOIN Forums F ON P.forums_id = F.id
+					WHERE H.created_at >= NOW() - INTERVAL 24 HOUR AND P.deleted = 0
+					GROUP BY P.id, P.title
+					ORDER BY view_count DESC
+				";
+				return queryExecute( sql, {}, { returnType: "array" } );
+			}
+		);
+	}
+
+	/**
+	 * Returns all users who hold a specific forum's moderator permission.
+	 *
+	 * Looks up UsersPermissions rows matching the given permissions_id UUID and
+	 * joins back to Users for display names. Not cached — this data is mutated
+	 * frequently by addModerator/removeModerator and the parent `admin:forums`
+	 * cache handles stale display data separately.
+	 *
+	 * @param {string} permissions_id UUID string of the forum's Permissions record.
+	 * @return {array} Array of structs: user_id, user_id_short, user_name.
+	 *                 Ordered alphabetically by user_name.
+	 */
+	function getForumModerators(required string permissions_id){
+		return queryExecute(
+			"SELECT
+				BIN_TO_UUID(U.id) AS user_id,
+				U.id_short          AS user_id_short,
+				U.user_name
+			FROM UsersPermissions UP
+			JOIN Users U ON U.id = UP.users_id
+			WHERE UP.permissions_id = UUID_TO_BIN(:permissions_id)
+			ORDER BY U.user_name",
+			{ permissions_id: { value: arguments.permissions_id, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+	}
+
+	/**
+	 * Returns the most recent site-wide activity events (new posts, new comments,
+	 * upvotes, downvotes) ordered newest first.
+	 *
+	 * Queries Posts, Comments, and Votes via UNION ALL — no schema changes required.
+	 * Not cached — the dashboard polls every 60 s and the query is lightweight (LIMIT 25).
+	 *
+	 * @param {numeric} limit  Maximum rows to return. Default: 25.
+	 * @return {array} Array of structs: user_name, post_id_short, post_title,
+	 *                 forum, activity_type ('new_post'|'new_comment'|'upvote'|'downvote'),
+	 *                 activity_at (timestamp). Ordered by activity_at descending.
+	 */
+	function getRecentActivity( numeric limit = 25 ){
+		return queryExecute(
+			"SELECT * FROM (
+				SELECT U.user_name,
+				       P.id_short    AS post_id_short,
+				       P.title       AS post_title,
+				       F.display     AS forum,
+				       'new_post'              AS activity_type,
+				       UNIX_TIMESTAMP(P.created_at) AS activity_at
+				FROM   Posts P
+				JOIN   Users  U ON U.id = P.users_id
+				JOIN   Forums F ON F.id = P.forums_id
+				WHERE  P.deleted = 0
+
+				UNION ALL
+
+				SELECT U.user_name,
+				       P.id_short    AS post_id_short,
+				       P.title       AS post_title,
+				       F.display     AS forum,
+				       'new_comment'           AS activity_type,
+				       UNIX_TIMESTAMP(C.created_at) AS activity_at
+				FROM   Comments C
+				JOIN   Users  U ON U.id = C.users_id
+				JOIN   Posts  P ON P.id = C.posts_id
+				JOIN   Forums F ON F.id = C.forums_id
+				WHERE  C.deleted = 0
+
+				UNION ALL
+
+				SELECT U.user_name,
+				       COALESCE(P.id_short,  CP.id_short) AS post_id_short,
+				       COALESCE(P.title,     CP.title)     AS post_title,
+				       COALESCE(F.display,   CF.display)   AS forum,
+				       CASE WHEN V.vote = 1 THEN 'upvote' ELSE 'downvote' END AS activity_type,
+				       UNIX_TIMESTAMP(V.created_at)                  AS activity_at
+				FROM   Votes V
+				JOIN   Users   U  ON U.id  = V.users_id
+				LEFT JOIN Posts  P  ON P.id  = V.posts_id
+				LEFT JOIN Forums F  ON F.id  = P.forums_id
+				LEFT JOIN Comments C  ON C.id  = V.comments_id
+				LEFT JOIN Posts  CP ON CP.id = C.posts_id
+				LEFT JOIN Forums CF ON CF.id = CP.forums_id
+			) AS activity
+			ORDER BY activity_at DESC
+			LIMIT :lim",
+			{ lim: { value: arguments.limit, cfsqltype: "cf_sql_integer" } },
+			{ returnType: "array" }
+		);
+	}
+
+	/**
+	 * Returns the 50 most recently soft-deleted posts with forum and title context.
+	 *
+	 * Uses `updated_at` as the deletion timestamp proxy (soft-deletes trigger an
+	 * UPDATE that bumps updated_at). Result is cached under `admin:deleted_posts`
+	 * (invalidated by Post::save()).
+	 *
+	 * @return {array} Array of structs: forum (display name), id_short, title,
+	 *                 updated_at. Ordered by updated_at descending.
+	 */
+	function getRecentlyDeletedPosts(){
+		return cache( "dismalCache" ).getOrSet(
+			"admin:deleted_posts",
+			() => {
+				var sql = "
+					SELECT
+						F.display AS forum,
+						P.id_short,
+						P.title,
+						P.updated_at
+					FROM Posts P
+					JOIN Users U ON P.users_id = U.id
+					JOIN Forums F ON P.forums_id = F.id
+					WHERE P.deleted = 1
+					ORDER BY P.updated_at DESC
+					LIMIT 50
+				";
+				return queryExecute( sql, {}, { returnType: "array" } );
+			}
+		);
+	}
+
+}

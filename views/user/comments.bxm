@@ -1,0 +1,62 @@
+<bx:output>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-2 order-1 order-lg-2">
+			#view( "user/header" )#
+			<bx:loop array="#data.commentsByUser#" index="c">
+				<div class="c-feed-post">
+					<div class="c-feed-post__header">
+						<img
+							src="/assets/images/#encodeForHTMLAttribute(c.forum_icon.len() ? c.forum_icon : 'placeholder.jpg')#"
+							class="c-feed-post__avatar"
+							alt=""
+							role="presentation"
+						/>
+						<a href="/f/#encodeForURL(c.display)#" class="c-feed-post__forum">f/#encodeForHTML(c.display)#</a>
+						<span class="c-feed-post__meta-sep">&bull;</span>
+						<span class="c-feed-post__timestamp ts-display" data-ts="#encodeForHTMLAttribute(c.created_utc)#" title="">#momentFrom(c.created_utc)#</span>
+					</div>
+					<div class="c-feed-post__context">
+						<bx:if c.reply_to_user.len() ?: false>
+							replying to <a href="/u/#encodeForURL(c.reply_to_user)#" class="c-post__author">#encodeForHTML(c.reply_to_user)#</a> on
+						<bx:else>
+							commented on
+						</bx:if>
+						<a href="/f/#encodeForURL(c.display)#/comments/#encodeForURL(c.post_id_short)#/#encodeForURL(slugifyText(c.title))#" class="post-link">#encodeForHTML(c.title)#</a>
+					</div>
+					<div class="c-feed-post__body">
+						<div class="c-feed-post__selftext">
+							#enhanceAnchorsInHtml(getSafeHTML(markdown(c.body), { directives: { noopenerAndNoreferrerAnchors: true } }))#
+						</div>
+					</div>
+					<div class="c-feed-post__footer" data-comment-id="#encodeForHTMLAttribute(c.id_short)#">
+						<span class="c-post__vote-pill">
+							<bx:if data.isIdentified>
+								<span role="button" tabindex="0" class="c-vote #(c.user_vote ?: 0) == 1 ? 'c-vote--active-up' : ''#" data-vote-up data-comment-id="#encodeForHTMLAttribute(c.id_short)#" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>
+							<bx:else>
+								<span class="c-vote c-vote--muted" aria-hidden="true"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>
+							</bx:if>
+							<span class="c-vote__score #(c.user_vote ?: 0) == 1 ? 'c-vote__score--up' : ( (c.user_vote ?: 0) == -1 ? 'c-vote__score--down' : '' )#" data-vote-score aria-label="Score: #encodeForHTML(c.vote_score)#">#encodeForHTML(c.vote_score)#</span>
+							<bx:if data.isIdentified>
+								<span role="button" tabindex="0" class="c-vote #(c.user_vote ?: 0) == -1 ? 'c-vote--active-down' : ''#" data-vote-down data-comment-id="#encodeForHTMLAttribute(c.id_short)#" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>
+							<bx:else>
+								<span class="c-vote c-vote--muted" aria-hidden="true"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>
+							</bx:if>
+						</span>
+						<a href="/f/#encodeForURL(c.display)#/comments/#encodeForURL(c.post_id_short)#/#encodeForURL(slugifyText(c.title))#/comment/#encodeForURL(c.id_short)#" class="c-post__action">
+							<i class="bi bi-chat-right-text" aria-hidden="true"></i>
+							View thread
+						</a>
+					</div>
+				</div>
+			</bx:loop>
+		</div>
+		<div class="d-none d-lg-block col-lg-3 p-2 order-lg-3">
+			#view( "widgets/user_profile" )#
+		</div>
+	</div>
+</div>
+</bx:output>

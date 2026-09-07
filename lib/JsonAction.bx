@@ -1,0 +1,24 @@
+/**
+ * Wraps a JSON route handler so an uncaught exception inside it always produces this app's own
+ * {success:false, error:"..."} shape (matching every JSON action/API route's own intentional
+ * failure responses), instead of falling through to app.bxs's generic error middleware, which
+ * emits {error:true, message:"..."} — a different, boolean-error shape client JS across this app
+ * expects never to see on a JSON endpoint. Used by ActionsRouter.bx and ApiRouter.bx to wrap
+ * every registered route in one place rather than a bespoke try/catch per handler.
+ */
+class {
+
+	function safeAction( required any logger, required function handler ) {
+		var log = arguments.logger;
+		var fn  = arguments.handler;
+		return ( req, res ) => {
+			try {
+				fn( req, res );
+			} catch ( any e ) {
+				log.error( "Unhandled error in JSON route [" & req.originalUrl & "]: " & e.message );
+				res.status( 500 ).json( { success: false, error: "An unexpected error occurred" } );
+			}
+		};
+	}
+
+}

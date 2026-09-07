@@ -1,0 +1,85 @@
+<bx:output>
+
+	<div id="login-modal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+		<div class="modal-dialog modal-dialog-centered">
+			<div class="modal-content bg-dark">
+				<div class="modal-body">
+					<bx:set flashMode = ( data.flash.keyExists("mode") ? data.flash.mode : "login" )>
+					<bx:set flashError = ( data.flash.keyExists("error") ? data.flash.error : "" )>
+					<bx:set flashUsername = ( data.flash.keyExists("username") ? data.flash.username : "" )>
+					<bx:set flashEmail = ( data.flash.keyExists("email") ? data.flash.email : "" )>
+					<bx:set suggestedUsername = new "lib.AppContext"().get("Admin").generateUsername()>
+
+					<h5 id="login-modal-title" class="login-title mb-4" data-login-heading="login" style="#flashMode == 'login' ? '' : 'display:none;'#">Sign In</h5>
+					<h5 class="login-title mb-4" data-login-heading="signup" style="#flashMode == 'signup' ? '' : 'display:none;'#">Create Account</h5>
+
+					<bx:if len(flashError)>
+						<div class="login-alert login-alert--error mb-3" role="alert">
+							<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+							#encodeForHTML(flashError)#
+						</div>
+					</bx:if>
+
+					<form method="post" action="/login" data-login-panel="login" style="#flashMode == 'login' ? '' : 'display:none;'#">
+						<div class="login-field mb-4">
+							<label class="login-label" for="login-user">Username or email</label>
+							<input id="login-user" class="login-input" type="text" name="user" required autocomplete="username" placeholder="User name or email" value="#encodeForHTMLAttribute(flashUsername)#">
+						</div>
+						<div class="login-field mb-4">
+							<label class="login-label" for="login-password">Password</label>
+							<input id="login-password" class="login-input" type="password" name="password" required autocomplete="current-password" placeholder="Password">
+						</div>
+						<div class="login-switch mb-2">
+							New here?
+							<button type="button" class="login-link" data-login-tab="signup">Create Account</button>
+						</div>
+						<div class="login-actions">
+							<button type="button" class="login-btn login-btn--secondary" onclick="DTModal.close('login-modal')">Close</button>
+							<button type="submit" class="login-btn login-btn--primary">Sign In</button>
+						</div>
+					</form>
+
+					<form method="post" action="/signup" data-login-panel="signup" style="#flashMode == 'signup' ? '' : 'display:none;'#">
+						<div class="login-field mb-4">
+							<label class="login-label" for="signup-username">Username</label>
+							<input id="signup-username" class="login-input" type="text" name="username" required autocomplete="username" placeholder="User name" value="#encodeForHTMLAttribute( len(flashUsername) ? flashUsername : suggestedUsername )#">
+						</div>
+						<div class="login-field mb-4">
+							<label class="login-label" for="signup-email">Email</label>
+							<input id="signup-email" class="login-input" type="email" name="email" required autocomplete="email" placeholder="Email" value="#encodeForHTMLAttribute(flashEmail)#">
+						</div>
+						<div class="login-field mb-4">
+							<label class="login-label" for="signup-password">Password</label>
+							<input id="signup-password" class="login-input" type="password" name="password" required autocomplete="new-password" minlength="8" placeholder="Password (8+ characters)">
+						</div>
+						<div class="login-switch mb-2">
+							Already have an account?
+							<button type="button" class="login-link" data-login-tab="login">Sign In</button>
+						</div>
+						<div class="login-actions">
+							<button type="button" class="login-btn login-btn--secondary" onclick="DTModal.close('login-modal')">Close</button>
+							<button type="submit" class="login-btn login-btn--primary">Create Account</button>
+						</div>
+					</form>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script>
+		(function () {
+			document.querySelectorAll('[data-login-tab]').forEach(function (tab) {
+				tab.addEventListener('click', function () {
+					var mode = tab.getAttribute('data-login-tab');
+					document.querySelectorAll('[data-login-panel]').forEach(function (panel) {
+						panel.style.display = (panel.getAttribute('data-login-panel') === mode) ? '' : 'none';
+					});
+					document.querySelectorAll('[data-login-heading]').forEach(function (h) {
+						h.style.display = (h.getAttribute('data-login-heading') === mode) ? '' : 'none';
+					});
+				});
+			});
+		})();
+	</script>
+
+</bx:output>

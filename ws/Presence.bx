@@ -1,0 +1,116 @@
+/**
+ * "N viewing now" presence — a heartbeat/TTL model, not lifecycle-event refcounting
+ * (onSubscribe/onUnsubscribe/onClose refcounting drifts whenever any lifecycle event is missed —
+ * reconnects, killed tabs, server restarts). Self-healing by construction: a session counts as
+ * present only while its last ping is within PRESENCE_TTL_SECONDS.
+ *
+ * Ping transport is a plain REST POST (routes/ActionsRouter.bx), not a STOMP SEND frame — unlike
+ * the source app's SocketBox-based WebSocket.bx::onSend() interception, boxExpressStomp() has no
+ * per-destination SEND interception hook to absorb a frame before subscribers see it. A REST ping
+ * that then explicitly broadcasts via Stomp is a direct, simpler equivalent with the same TTL
+ * behavior.
+ *
+ * Two independent presence "channels" share the same TTL/prune mechanics: forums (`ping()`/
+ * `count()`, broadcasting `forum-presence` on the `forum.{id}` destination — the original Phase 6
+ * feature) and posts (`pingPost()`/`countPost()`, broadcasting `post-presence` on the SAME
+ * `post.{id}` destination the post-detail page already subscribes to for comment/vote broadcasts
+ * — no new client subscription needed). State: `{ "forum:{id}"|"post:{id}": { sessionKey:
+ * lastSeenEpochSeconds } }`. Nothing else — no per-session bookkeeping to leak or drift.
+ */
+class {
+
+	variables.PRESENCE_TTL_SECONDS = 75;
+
+	function init( required any stomp ) {
+		variables.stomp = arguments.stomp;
+		variables.byChannel = {};
+		variables.lockName = "Presence-" & createUUID();
+		return this;
+	}
+
+	function ping( required string forumIdShort, required string sessionKey ) {
+		return _ping( "forum:" & arguments.forumIdShort, arguments.sessionKey, "forum." & arguments.forumIdShort, "forum-presence" );
+	}
+
+	function count( required string forumIdShort ) {
+		return _count( "forum:" & arguments.forumIdShort, "forum." & arguments.forumIdShort, "forum-presence" );
+	}
+
+	function pingPost( required string postIdShort, required string sessionKey ) {
+		return _ping( "post:" & arguments.postIdShort, arguments.sessionKey, "post." & arguments.postIdShort, "post-presence" );
+	}
+
+	function countPost( required string postIdShort ) {
+		return _count( "post:" & arguments.postIdShort, "post." & arguments.postIdShort, "post-presence" );
+	}
+
+	/**
+	 * Stamps sessionKey present on channelKey, prunes expired entries, and broadcasts the new
+	 * count to destination if the live set actually changed size (a joiner appeared, or stale
+	 * sessions aged out in the same prune pass).
+	 */
+	private function _ping( required string channelKey, required string sessionKey, required string destination, required string event ) {
+		var countBefore = -1;
+		var countAfter = 0;
+		lock name="#variables.lockName#" type="exclusive" timeout="5" {
+			if ( !structKeyExists( variables.byChannel, arguments.channelKey ) ) {
+				variables.byChannel[ arguments.channelKey ] = {};
+			}
+			countBefore = _prune( arguments.channelKey );
+			variables.byChannel[ arguments.channelKey ][ arguments.sessionKey ] = _nowSeconds();
+			countAfter = structCount( variables.byChannel[ arguments.channelKey ] );
+		}
+		if ( countAfter != countBefore ) {
+			_broadcast( arguments.destination, arguments.event, countAfter );
+		}
+		return countAfter;
+	}
+
+	/**
+	 * Prunes then counts. If the read itself is the first observer of an expiry, it broadcasts
+	 * the corrected count — otherwise an HTTP-render-triggered prune would silently swallow the
+	 * transition and already-connected viewers would keep seeing the stale value.
+	 */
+	private function _count( required string channelKey, required string destination, required string event ) {
+		var countBefore = -1;
+		var countAfter = 0;
+		lock name="#variables.lockName#" type="exclusive" timeout="5" {
+			if ( !structKeyExists( variables.byChannel, arguments.channelKey ) ) {
+				return 0;
+			}
+			countBefore = structCount( variables.byChannel[ arguments.channelKey ] );
+			countAfter = _prune( arguments.channelKey );
+		}
+		if ( countAfter != countBefore ) {
+			_broadcast( arguments.destination, arguments.event, countAfter );
+		}
+		return countAfter;
+	}
+
+	/**
+	 * Must be called under variables.lockName already held — removes expired sessionKeys for
+	 * channelKey and returns the resulting count.
+	 */
+	private function _prune( required string channelKey ) {
+		if ( !structKeyExists( variables.byChannel, arguments.channelKey ) ) return 0;
+		var cutoff = _nowSeconds() - variables.PRESENCE_TTL_SECONDS;
+		var sessions = variables.byChannel[ arguments.channelKey ];
+		for ( var key in structCopy( sessions ) ) {
+			if ( sessions[ key ] < cutoff ) structDelete( sessions, key );
+		}
+		return structCount( sessions );
+	}
+
+	private function _broadcast( required string destination, required string event, required numeric count ) {
+		try {
+			variables.stomp.send( arguments.destination, { event: arguments.event, count: arguments.count } );
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).warn( "Presence broadcast failed for #arguments.destination#: #e.message#" );
+		}
+	}
+
+	private function _nowSeconds() {
+		return createObject( "java", "java.time.Instant" ).now().getEpochSecond();
+	}
+
+}

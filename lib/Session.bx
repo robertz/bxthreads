@@ -1,0 +1,68 @@
+/**
+ * Replaces RequestService.bx's identity bootstrap (steps 2 + 5 of setup_request()) plus the
+ * `client.uid` cookie scope it read/wrote — there's no ColdBox `client` scope under
+ * boxlang-express, so identity lives in req.session (boxExpressSession()) instead.
+ */
+class {
+
+	/**
+	 * Seeds req.session.uid with the anonymous sentinel on a session's first request. Call this
+	 * from app-level middleware before any route handler runs (mirrors setup_request() step 2).
+	 */
+	function ensureUid( required any req ) {
+		if ( !arguments.req.session.keyExists( "uid" ) ) {
+			arguments.req.session.uid = getDefaultUser();
+		}
+		return arguments.req.session.uid;
+	}
+
+	function isIdentified( required any req ) {
+		return ensureUid( arguments.req ) != getDefaultUser();
+	}
+
+	/**
+	 * Loads the current User bean (cache-backed via User.getById(), same as the source app's
+	 * prc.current_user/prc.UserBean). Always returns a bean — anonymous requests get the
+	 * defaultUser row, matching setup_request() step 5.
+	 */
+	function currentUser( required any req ) {
+		var uid = ensureUid( arguments.req );
+		return new "models.beans.User"().getById( uid );
+	}
+
+	/**
+	 * Middleware: redirect anonymous requests to "/" — mirrors the anon-redirect gates repeated
+	 * across AppRouter.bx (settings(), createPost(), userAchievements() ownership check, etc.).
+	 */
+	function requireAuth( required any req, required any res, required any next ) {
+		if ( !isIdentified( arguments.req ) ) {
+			arguments.res.redirect( "/" );
+			return;
+		}
+		arguments.next();
+	}
+
+	/**
+	 * One-shot message surfaced on the *next* request after a redirect — replaces ColdBox's
+	 * flash scope for the handful of plain-POST forms (login/signup) that need to show a
+	 * validation error after a redirect, without cbwire's in-place re-render.
+	 */
+	function setFlash( required any req, required struct data ) {
+		arguments.req.session.flash = arguments.data;
+	}
+
+	/** Reads and clears the flash — call once per request, from RequestContext.bootstrap(). */
+	function consumeFlash( required any req ) {
+		if ( arguments.req.session.keyExists( "flash" ) ) {
+			var f = arguments.req.session.flash;
+			structDelete( arguments.req.session, "flash" );
+			return f;
+		}
+		return {};
+	}
+
+	private function getDefaultUser() {
+		return new "lib.AppContext"().get( "Config" ).getDefaultUser();
+	}
+
+}

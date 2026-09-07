@@ -1,0 +1,106 @@
+/* ── Vote controls ── */
+.c-vote {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	/* min 36×36 touch target; padding provides the hit area */
+	min-width: 36px;
+	min-height: 36px;
+	padding: 8px;
+	border-radius: 4px;
+	color: rgba(255,255,255,0.45);
+	cursor: pointer;
+	transition: color 100ms ease, background-color 100ms ease;
+	user-select: none;
+}
+
+.c-vote i {
+	font-size: 20px;
+	line-height: 1;
+}
+
+.c-vote:hover {
+	background-color: rgba(255,255,255,0.08);
+	color: rgba(255,255,255,0.7);
+}
+
+.c-vote--active-up,
+.c-vote--active-up:hover {
+	color: var(--accent);
+	background-color: rgba(var(--accent-rgb), 0.16);
+	text-shadow: 0 0 10px rgba(var(--accent-rgb), 0.55);
+	transition: color 100ms ease, background-color 100ms ease;
+}
+
+.c-vote--active-down,
+.c-vote--active-down:hover {
+	color: var(--accent-cool);
+	background-color: rgba(var(--accent-cool-rgb), 0.16);
+	text-shadow: 0 0 10px rgba(var(--accent-cool-rgb), 0.55);
+	transition: color 100ms ease, background-color 100ms ease;
+}
+
+@media (max-width: 767.98px) {
+	.c-vote {
+		min-width: 44px;
+		min-height: 44px;
+	}
+}
+
+.c-vote__score {
+	display: inline-flex;
+	align-items: center;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	font-weight: 600;
+	color: rgba(255,255,255,0.65);
+	min-width: 1.5em;
+	justify-content: center;
+}
+
+.c-vote__score--up {
+	color: var(--accent);
+}
+
+.c-vote__score--down {
+	color: var(--accent-cool);
+}
+
+/* ── Non-interactive vote arrows (logged-out) ── */
+
+.c-vote--muted {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.c-vote--muted:hover {
+	background-color: transparent;
+	color: rgba(255,255,255,0.45);
+}
+
+/* Comment-level votes: compact but still 36×36 touch target */
+.c-comment__vote {
+	min-width: 36px;
+	min-height: 36px;
+	padding: 6px;
+}
+
+.c-comment__vote i {
+	font-size: 16px;
+}
+
+.c-comment__vote-score {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 600;
+	min-width: 1em;
+	color: rgba(255,255,255,0.5);
+}
+
+.c-comment__vote-score.c-vote__score--up {
+	color: var(--accent);
+}
+
+.c-comment__vote-score.c-vote__score--down {
+	color: var(--accent-cool);
+}

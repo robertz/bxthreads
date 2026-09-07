@@ -1,0 +1,106 @@
+<bx:output>
+<div class="dt-layout">
+	<div class="row">
+		<div class="col-12 col-lg-8">
+			<div class="create-post-container c-editor__wrap">
+
+				<div class="editor-header">
+					<h2 class="editor-title">Create Post</h2>
+				</div>
+
+				<bx:if len( data.formError ?: "" )>
+					<p class="text-danger mb-3">#encodeForHTML( data.formError )#</p>
+				</bx:if>
+
+				<form class="editor-body" method="post" action="/submit" data-editor-form>
+
+					<div class="editor-field">
+						<label class="editor-label" for="editor_forum">Post to</label>
+						<select id="editor_forum" name="forum" class="editor-select">
+							<bx:loop array="#data.forums#" index="forum">
+								<option value="#encodeForHTMLAttribute( forum.display )#" #forum.display == data.selected ? "selected" : ""#>#encodeForHTML( forum.display )#</option>
+							</bx:loop>
+						</select>
+					</div>
+
+					<input type="hidden" name="post_type" value="post" data-post-type-input />
+					<div class="editor-tabs" role="tablist">
+						<button type="button" class="editor-tab editor-tab--active" data-post-type-tab data-post-type="post" role="tab">
+							<i class="bi bi-file-text" aria-hidden="true"></i>
+							Post
+						</button>
+						<button type="button" class="editor-tab" data-post-type-tab data-post-type="link" role="tab">
+							<i class="bi bi-link-45deg" aria-hidden="true"></i>
+							Link
+						</button>
+					</div>
+
+					<div class="editor-field">
+						<label class="editor-label" for="editor_title">Title</label>
+						<input
+							id="editor_title"
+							type="text"
+							name="title"
+							class="editor-input"
+							placeholder="Post title"
+							maxlength="500"
+						/>
+					</div>
+
+					<div class="editor-field" data-editor-link-field style="display:none;">
+						<label class="editor-label" for="editor_link">URL</label>
+						<input
+							id="editor_link"
+							name="link_url"
+							type="url"
+							class="editor-input"
+							placeholder="https://"
+							data-editor-link-input
+						/>
+						<p class="editor-label-hint mb-0" data-link-preview-status></p>
+
+						<div class="render-link c-feed-post__link-card" data-link-preview-card style="display:none;">
+							<div class="c-feed-post__link-content">
+								<h5 class="c-feed-post__title" data-link-preview-title></h5>
+								<span class="c-feed-post__domain" data-link-preview-domain></span>
+								<p class="c-feed-post__link-desc" data-link-preview-desc style="display:none;"></p>
+							</div>
+							<a class="c-feed-post__link-thumb" data-link-preview-thumb-link target="_blank" rel="noopener noreferrer nofollow ugc" style="display:none;">
+								<img data-link-preview-thumb-img loading="lazy" alt="" />
+							</a>
+						</div>
+					</div>
+
+					<div class="editor-field" data-editor-body-field>
+						<label class="editor-label" for="editor_body">Content</label>
+						<textarea
+							id="editor_body"
+							name="body"
+							class="editor-textarea has-toolbar"
+							placeholder="What's on your mind?"
+						></textarea>
+					</div>
+
+					<div class="editor-actions">
+						<button type="submit" class="editor-btn editor-btn--primary">Post</button>
+					</div>
+
+				</form>
+
+			</div>
+		</div>
+
+		<div class="d-none d-lg-block col-lg-4">
+			<div class="editor-sidebar">
+				<h3 class="editor-sidebar__title">Posting tips</h3>
+				<ul class="editor-sidebar__tips">
+					<li>Keep your title descriptive and concise</li>
+					<li>Be civil and stay on topic</li>
+					<li>For link posts, add commentary to give context</li>
+					<li>Markdown is supported in post content</li>
+				</ul>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

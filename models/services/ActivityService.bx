@@ -1,0 +1,111 @@
+/**
+ * Append-only activity log for tracking user actions.
+ * Failures are swallowed so activity logging never interrupts the parent operation.
+ */
+class {
+
+	function init(){
+		return this;
+	}
+
+	/**
+	 * Log a user action to the Activities table.
+	 *
+	 * @param {string} usersId    - UUID of the acting user.
+	 * @param {string} action     - Action identifier (e.g. "create_post", "login").
+	 * @param {string} targetType - Entity type: "post", "comment", or "" for none.
+	 * @param {string} targetId   - UUID of the target entity, or "" for none.
+	 * @param {struct} meta       - Optional metadata struct (stored as JSON).
+	 */
+	function log(
+		required string usersId,
+		required string action,
+		string targetType = "",
+		string targetId = "",
+		struct meta = {}
+	){
+		try {
+			var id = lCase( createGUID() );
+			var hasTarget = len( arguments.targetType ) && len( arguments.targetId );
+			var hasMeta = !arguments.meta.isEmpty();
+
+			queryExecute(
+				"INSERT INTO Activities (id, users_id, action, target_type, target_id, meta)
+				 VALUES (
+					UUID_TO_BIN(:id),
+					UUID_TO_BIN(:users_id),
+					:action,
+					:target_type,
+					#hasTarget ? 'UUID_TO_BIN(:target_id)' : 'NULL'#,
+					:meta
+				 )",
+				{
+					"id"          : { value: id, cfsqltype: "cf_sql_varchar" },
+					"users_id"    : { value: arguments.usersId, cfsqltype: "cf_sql_varchar" },
+					"action"      : { value: arguments.action, cfsqltype: "cf_sql_varchar" },
+					"target_type" : { value: arguments.targetType, cfsqltype: "cf_sql_varchar", null: !hasTarget },
+					"target_id"   : { value: hasTarget ? arguments.targetId : "", cfsqltype: "cf_sql_varchar", null: !hasTarget },
+					"meta"        : { value: hasMeta ? jsonSerialize( arguments.meta ) : "", cfsqltype: "cf_sql_varchar", null: !hasMeta }
+				}
+			);
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).error( "ActivityService.log failed: #e.message#" );
+		}
+	}
+
+	/**
+	 * Returns recent activity rows for a user, newest first.
+	 */
+	function getRecentByUser( required string usersId, numeric limit = 20, numeric offset = 0 ){
+		return queryExecute(
+			"SELECT BIN_TO_UUID(id) AS id, action, target_type,
+			        BIN_TO_UUID(target_id) AS target_id, meta, created_at
+			 FROM Activities
+			 WHERE users_id = UUID_TO_BIN(:users_id)
+			 ORDER BY created_at DESC
+			 LIMIT :limit OFFSET :offset",
+			{
+				"users_id" : { value: arguments.usersId, cfsqltype: "cf_sql_varchar" },
+				"limit"    : { value: arguments.limit, cfsqltype: "cf_sql_integer" },
+				"offset"   : { value: arguments.offset, cfsqltype: "cf_sql_integer" }
+			},
+			{ returnType: "array" }
+		);
+	}
+
+	/**
+	 * Returns the count of a specific action for a user.
+	 */
+	function getCountByAction( required string usersId, required string action ){
+		var result = queryExecute(
+			"SELECT COUNT(*) AS cnt
+			 FROM Activities
+			 WHERE users_id = UUID_TO_BIN(:users_id)
+			   AND action = :action",
+			{
+				"users_id" : { value: arguments.usersId, cfsqltype: "cf_sql_varchar" },
+				"action"   : { value: arguments.action, cfsqltype: "cf_sql_varchar" }
+			},
+			{ returnType: "array" }
+		);
+		return result.len() ? result[ 1 ].cnt : 0;
+	}
+
+	/**
+	 * Returns a struct of action → count for all actions by a user.
+	 */
+	function getActionSummary( required string usersId ){
+		var rows = queryExecute(
+			"SELECT action, COUNT(*) AS cnt
+			 FROM Activities
+			 WHERE users_id = UUID_TO_BIN(:users_id)
+			 GROUP BY action",
+			{ "users_id" : { value: arguments.usersId, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		var summary = {};
+		rows.each( (row) => { summary[ row.action ] = row.cnt; } );
+		return summary;
+	}
+
+}

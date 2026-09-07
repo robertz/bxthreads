@@ -1,0 +1,121 @@
+<bx:output>
+<div class="container py-4" data-forum-mod data-forum-display="#encodeForHTMLAttribute(data.forum.display)#">
+	<div class="mb-3">
+		<a href="/f/#encodeForURL(data.forum.display)#" class="post-link text-decoration-none">
+			&laquo; back to f/#encodeForHTML(data.forum.display)#
+		</a>
+	</div>
+	<h1 class="mod-wrap__title mb-4">Manage f/#encodeForHTML(data.forum.display)#</h1>
+
+	<div class="row g-4">
+
+		<div class="col-12">
+			<div class="card bg-dark rf-border">
+				<div class="card-body">
+					<h2 class="mod-section__title">Forum Details</h2>
+
+					<p data-forum-save-status class="mb-2"></p>
+					<form data-forum-details-form>
+						<div class="mb-3">
+							<label class="form-label">Display Name</label>
+							<p class="form-control-plaintext">#encodeForHTML(data.forum.display)#</p>
+						</div>
+
+						<div class="mb-3">
+							<label class="form-label" for="forum_about">About</label>
+							<input id="forum_about" name="about" type="text" class="form-control" value="#encodeForHTMLAttribute(data.forum.about)#" />
+						</div>
+
+						<div class="mb-3">
+							<label class="form-label" for="forum_icon">Icon</label>
+							<input id="forum_icon" name="icon" type="text" class="form-control" value="#encodeForHTMLAttribute(data.forum.icon)#" />
+						</div>
+
+						<button type="submit" class="btn btn-primary">Save Details</button>
+					</form>
+
+					<div class="mt-3 pt-3 border-top border-secondary">
+						<strong>Privacy</strong>
+						<div class="form-text mb-2" data-forum-privacy-text>
+							<bx:if data.forum.is_private>
+								This forum is <strong>private</strong> &mdash; hidden from the sidebar and feeds for non-members.
+							<bx:else>
+								This forum is <strong>public</strong> &mdash; visible to everyone.
+							</bx:if>
+						</div>
+						<button type="button" class="btn #data.forum.is_private ? 'btn-warning' : 'btn-outline-secondary'#" data-forum-privacy-toggle data-is-private="#data.forum.is_private ? 1 : 0#">
+							#data.forum.is_private ? "Private — Make Public" : "Public — Make Private"#
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12">
+			<div class="card bg-dark rf-border">
+				<div class="card-body">
+					<h2 class="mod-section__title">Moderators</h2>
+
+					<p data-mod-status class="mb-2"></p>
+					<table class="mod-table" data-mods-table>
+						<thead>
+							<tr><th>Moderator</th><th></th></tr>
+						</thead>
+						<tbody data-mods-tbody>
+							<bx:if data.mods.len()>
+								<bx:loop array="#data.mods#" index="m">
+									<tr>
+										<td><a href="/u/#encodeForURL(m.user_name)#" class="post-link text-decoration-none">#encodeForHTML(m.user_name)#</a></td>
+										<td><button type="button" class="btn btn-sm btn-outline-danger" data-remove-moderator data-username="#encodeForHTMLAttribute(m.user_name)#">Remove</button></td>
+									</tr>
+								</bx:loop>
+							<bx:else>
+								<tr data-no-mods-row><td colspan="2" class="mod-table__muted">No moderators yet.</td></tr>
+							</bx:if>
+						</tbody>
+					</table>
+
+					<form data-add-moderator-form class="d-flex gap-2 mt-3">
+						<input type="text" name="username" class="form-control" placeholder="Username" required />
+						<button type="submit" class="btn btn-secondary">Add Moderator</button>
+					</form>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12" data-members-section style="#data.forum.is_private ? '' : 'display:none;'#">
+			<div class="card bg-dark rf-border">
+				<div class="card-body">
+					<h2 class="mod-section__title">Members</h2>
+					<p class="text-muted small mb-3">Members can view and post in this private forum.</p>
+
+					<p data-member-status class="mb-2"></p>
+					<table class="mod-table" data-members-table>
+						<thead>
+							<tr><th>Member</th><th></th></tr>
+						</thead>
+						<tbody data-members-tbody>
+							<bx:if data.members.len()>
+								<bx:loop array="#data.members#" index="m">
+									<tr>
+										<td><a href="/u/#encodeForURL(m.user_name)#" class="post-link text-decoration-none">#encodeForHTML(m.user_name)#</a></td>
+										<td><button type="button" class="btn btn-sm btn-outline-danger" data-remove-member data-username="#encodeForHTMLAttribute(m.user_name)#">Remove</button></td>
+									</tr>
+								</bx:loop>
+							<bx:else>
+								<tr data-no-members-row><td colspan="2" class="mod-table__muted">No members yet.</td></tr>
+							</bx:if>
+						</tbody>
+					</table>
+
+					<form data-add-member-form class="d-flex gap-2 mt-3">
+						<input type="text" name="username" class="form-control" placeholder="Username" required />
+						<button type="submit" class="btn btn-secondary">Add Member</button>
+					</form>
+				</div>
+			</div>
+		</div>
+
+	</div>
+</div>
+</bx:output>

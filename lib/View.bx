@@ -1,0 +1,59 @@
+/**
+ * Layout composition — boxlang-express's res.render() renders exactly one template and sends
+ * it; there's no ColdBox-style "view + layout" wrapping built in. renderPage() replicates that:
+ * render the inner view to a string (via savecontent+include, bypassing res.render() entirely
+ * for this step), then hand it to the real res.render("layouts/Main", ...) as `data.body` —
+ * matching the source app's `#view()#` placeholder inside layouts/Main.bxm.
+ *
+ * Both steps merge app.locals + res.locals + explicit data with the same precedence
+ * res.render() itself documents (app.locals, then res.locals, then explicit data) — the inner
+ * render has to replicate that merge by hand since it skips res.render()'s own pipeline; the
+ * outer layout render doesn't (res.render() does it automatically), so only `body` needs to be
+ * passed there.
+ */
+class {
+
+	function renderToString( required any app, required any res, required string viewName, struct data = {} ) {
+		var data = structCopy( arguments.app.locals );
+		data.append( arguments.res.locals, true );
+		data.append( arguments.data, true );
+
+		// A closure, not a plain included function — it needs to close over this call's own
+		// `data`, which a plain function (defined via ViewHelpers.bxm's shared include-scope)
+		// would not have access to. Lets any view do #view("widgets/left_nav")# to render a
+		// partial inline, matching the source app's ColdBox `view()` helper.
+		var view = function( required string name ) {
+			var partial = "";
+			bx:savecontent variable="partial" {
+				include "/views/#arguments.name#.bxm";
+			}
+			return partial;
+		};
+
+		var html = "";
+		bx:savecontent variable="html" {
+			include "/lib/ViewHelpers.bxm";
+			include "/views/#arguments.viewName#.bxm";
+		}
+		return html;
+	}
+
+	function renderPage( required any app, required any res, required string viewName, struct data = {} ) {
+		var body = renderToString( arguments.app, arguments.res, arguments.viewName, arguments.data );
+		// Rendered here, not inside the layout template itself — the layout runs through
+		// res.render()'s own internal include, which has no `app`/`res` in scope to call
+		// renderToString() with.
+		var loginModal = "";
+		if ( !arguments.res.locals.isIdentified ) {
+			loginModal = renderToString( arguments.app, arguments.res, "modals/login", arguments.data );
+		}
+		// Same reason as loginModal above: the layout has no `view()` closure of its own to call
+		// #view("widgets/left_nav")# the way an inner view can, since it renders through
+		// res.render()'s own pipeline, not renderToString()'s. Pre-rendered here instead, for the
+		// mobile forum drawer (views/layouts/Main.bxm) which needs this same content outside the
+		// desktop-only sidebar column.
+		var mobileNav = renderToString( arguments.app, arguments.res, "widgets/left_nav", arguments.data );
+		arguments.res.render( "layouts/Main", { body: body, loginModal: loginModal, mobileNav: mobileNav } );
+	}
+
+}

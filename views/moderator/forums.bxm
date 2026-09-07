@@ -1,0 +1,63 @@
+<bx:output>
+<div class="mod-wrap">
+	#view("widgets/mod_nav")#
+
+	<div id="mod-forums-alert"></div>
+
+	<div class="row">
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Create Forum</h2>
+					<form data-create-forum-form class="mod-bots__form-row">
+						<input type="text" name="display" class="mod-bots__input" placeholder="Forum name (letters, numbers, - and _)" required>
+						<input type="text" name="about" class="mod-bots__input" placeholder="About (optional)">
+						<button type="submit" class="mod-bots__btn">Create</button>
+					</form>
+				</div>
+			</div>
+		</div>
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Forums</h2>
+					<bx:if !data.forums.len()>
+						<p class="mod-table__muted mb-0">No forums yet.</p>
+					<bx:else>
+						<table class="mod-table">
+							<thead>
+								<tr>
+									<th>Forum</th>
+									<th>Owner</th>
+									<th>Moderators</th>
+									<th>Subscribers</th>
+									<th>Posts</th>
+									<th>Comments</th>
+									<th>Privacy</th>
+									<th>Created</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#data.forums#" index="f">
+									<tr>
+										<td class="mod-table__nowrap">
+											<a href="/f/#encodeForURL( f.display )#" class="post-link text-decoration-none">f/#encodeForHTML( f.display )#</a>
+										</td>
+										<td class="mod-table__nowrap">#encodeForHTML( f.owner )#</td>
+										<td class="mod-table__muted">#encodeForHTML( len( f.moderator_list ?: "" ) ? f.moderator_list : "—" )#</td>
+										<td class="mod-table__nowrap">#encodeForHTML( f.subscribers ?: 0 )#</td>
+										<td class="mod-table__nowrap">#encodeForHTML( f.posts ?: 0 )#</td>
+										<td class="mod-table__nowrap">#encodeForHTML( f.comments ?: 0 )#</td>
+										<td class="mod-table__nowrap">#f.is_private ? "Private" : "Public"#</td>
+										<td class="mod-table__nowrap">#momentFrom( f.created_at )#</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

@@ -1,0 +1,870 @@
+/**
+ * Raw-SQL DAO for all DismalThreads read queries. Each method accepts a filters struct and
+ * additively applies present keys, same contract as the source app's qb-based version — ported
+ * here to plain queryExecute() (see .claude/plans/typed-seeking-frog.md, decision #5: qb was a
+ * ColdBox-ecosystem dependency of unverified compatibility here, and its only real value for this
+ * DAO — the additive-filter pattern — is a few lines without it).
+ * Returns arrays of structs; UUIDs decoded via BIN_TO_UUID.
+ */
+class {
+
+	function init() {
+		variables.db = new "lib.AppContext"().get( "Sql" );
+		return this;
+	}
+
+	// =========================================================================
+	// Posts
+	// =========================================================================
+
+	/**
+	 * Filters: forum, username, deleted (0|1|all), type (text|link), before (unix ts), limit,
+	 * offset, matchQuery (raw search text — see buildBooleanMatchTerm()), viewerId (current
+	 * viewer's UUID, "" for anonymous), isAdmin (bypasses the privacy check).
+	 *
+	 * Privacy: a private forum's posts are only ever included for an admin or a viewer subscribed
+	 * to that forum — applied unconditionally here (not just when a `forum` filter is present), so
+	 * the unscoped "all"/home feed, search, and top-viewed can't leak a private forum's posts to
+	 * non-members the way they used to when this check only happened at the route layer for a
+	 * single scoped forum page.
+	 *
+	 * vote_score/comment_count/view_count are computed by joining three small per-post-set
+	 * aggregates (FilteredPosts, materialized first via the WHERE/ORDER/LIMIT below) rather than
+	 * three correlated subqueries repeated once per returned row — for a 50-row feed that's 3
+	 * GROUP BY aggregations total instead of ~150 individual subquery executions.
+	 */
+	function getPosts( struct filters = {} ) {
+		var f       = arguments.filters;
+		var wheres  = [];
+		var params  = {};
+
+		var deleted = f.keyExists( "deleted" ) ? f.deleted : "0";
+		if ( deleted == "0" ) {
+			wheres.append( "P.deleted = 0" );
+		} else if ( deleted == "1" ) {
+			wheres.append( "P.deleted = 1" );
+		}
+
+		if ( f.keyExists( "forum" ) && len( f.forum ) ) {
+			wheres.append( "F.display = :forum" );
+			params[ "forum" ] = { value: f.forum, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "username" ) && len( f.username ) ) {
+			wheres.append( "U.user_name = :username" );
+			params[ "username" ] = { value: f.username, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "type" ) && len( f.type ) ) {
+			wheres.append( "P.post_type = :postType" );
+			params[ "postType" ] = { value: f.type, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "before" ) && f.before > 0 ) {
+			wheres.append( "UNIX_TIMESTAMP(P.created_at) < :before" );
+			params[ "before" ] = { value: f.before, cfsqltype: "cf_sql_bigint" };
+		}
+
+		if ( !( f.keyExists( "isAdmin" ) && f.isAdmin ) ) {
+			var viewerId = f.keyExists( "viewerId" ) ? f.viewerId : "";
+			if ( len( viewerId ) ) {
+				wheres.append( "(F.is_private = 0 OR EXISTS (SELECT 1 FROM UsersForums UF WHERE UF.users_id = UUID_TO_BIN(:viewerId) AND UF.forums_id = F.id))" );
+				params[ "viewerId" ] = { value: viewerId, cfsqltype: "cf_sql_varchar" };
+			} else {
+				wheres.append( "F.is_private = 0" );
+			}
+		}
+
+		// Inner CTE orders by its own SELECT-list aliases (created_utc/relevance, not the raw
+		// P.created_at/MATCH() expression) so the same names work unqualified inside the CTE and
+		// as FP.<alias> in the outer query below — the outer query only has FP's already-computed
+		// columns to order by, not the original P/derived expressions.
+		var orderBy = "created_utc DESC, id_short";
+		var relevanceSelect = "0 AS relevance";
+		if ( f.keyExists( "matchQuery" ) && len( f.matchQuery ) ) {
+			var matchTerm = buildBooleanMatchTerm( f.matchQuery );
+			if ( len( matchTerm ) ) {
+				wheres.append( "MATCH(P.title, P.body) AGAINST(:matchTerm IN BOOLEAN MODE)" );
+				params[ "matchTerm" ] = { value: matchTerm, cfsqltype: "cf_sql_varchar" };
+				relevanceSelect = "MATCH(P.title, P.body) AGAINST(:matchTerm IN BOOLEAN MODE) AS relevance";
+				orderBy = "relevance DESC, id_short";
+			} else {
+				// The query was entirely boolean-mode operator characters (e.g. "+++") with no
+				// actual search terms left after stripping them — a real MATCH() with an empty
+				// string throws, and skipping the filter entirely would silently turn "search"
+				// into "return everything," so force zero rows instead.
+				wheres.append( "1 = 0" );
+			}
+		}
+
+		params[ "limitVal" ]  = { value: f.keyExists( "limit" ) ? f.limit : 50, cfsqltype: "cf_sql_integer" };
+		params[ "offsetVal" ] = { value: f.keyExists( "offset" ) ? f.offset : 0, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			WITH FilteredPosts AS (
+				SELECT
+					P.id,
+					P.id_short,
+					P.post_type,
+					P.title,
+					P.body,
+					P.deleted,
+					P.pinned,
+					UNIX_TIMESTAMP(P.created_at) AS created_utc,
+					UNIX_TIMESTAMP(P.updated_at) AS updated_utc,
+					BIN_TO_UUID(P.users_id)  AS users_id,
+					U.user_name,
+					BIN_TO_UUID(P.forums_id) AS forums_id,
+					F.display                AS forum,
+					F.icon                   AS forum_icon,
+					F.is_private,
+					L.url                    AS link_url,
+					L.title                  AS link_title,
+					L.description            AS link_description,
+					L.image                  AS link_image,
+					" & relevanceSelect & "
+				FROM Posts P
+				JOIN Users U ON U.id = P.users_id
+				JOIN Forums F ON F.id = P.forums_id
+				LEFT JOIN PostsLinks PL ON PL.posts_id = P.id
+				LEFT JOIN Links L ON L.id = PL.links_id
+			" & variables.db.whereClause( wheres ) & "
+				ORDER BY " & orderBy & "
+				LIMIT :limitVal OFFSET :offsetVal
+			),
+			VoteScores AS (
+				SELECT V.posts_id, SUM(V.vote) AS vote_score
+				FROM Votes V
+				WHERE V.posts_id IN (SELECT id FROM FilteredPosts)
+				GROUP BY V.posts_id
+			),
+			CommentCounts AS (
+				SELECT C.posts_id, COUNT(*) AS comment_count
+				FROM Comments C
+				WHERE C.posts_id IN (SELECT id FROM FilteredPosts) AND C.deleted = 0
+				GROUP BY C.posts_id
+			),
+			ViewCounts AS (
+				SELECT H.posts_id, COUNT(*) AS view_count
+				FROM History H
+				WHERE H.posts_id IN (SELECT id FROM FilteredPosts)
+				GROUP BY H.posts_id
+			)
+			SELECT
+				BIN_TO_UUID(FP.id) AS id,
+				FP.id_short, FP.post_type, FP.title, FP.body, FP.deleted, FP.pinned,
+				FP.created_utc, FP.updated_utc, FP.users_id, FP.user_name, FP.forums_id,
+				FP.forum, FP.forum_icon, FP.is_private, FP.link_url, FP.link_title,
+				FP.link_description, FP.link_image, FP.relevance,
+				COALESCE(VS.vote_score, 0)   AS vote_score,
+				COALESCE(CC.comment_count, 0) AS comment_count,
+				COALESCE(VC.view_count, 0)    AS view_count
+			FROM FilteredPosts FP
+			LEFT JOIN VoteScores VS ON VS.posts_id = FP.id
+			LEFT JOIN CommentCounts CC ON CC.posts_id = FP.id
+			LEFT JOIN ViewCounts VC ON VC.posts_id = FP.id
+			ORDER BY FP." & replace( orderBy, ", ", ", FP.", "all" ) & "
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	/**
+	 * Builds a MySQL BOOLEAN MODE fulltext search term from raw user input: each word becomes a
+	 * required (+) prefix (*) match, e.g. "boxlang express" -> "+boxlang* +express*". BOOLEAN
+	 * MODE is used instead of the default NATURAL LANGUAGE MODE specifically to sidestep its 50%
+	 * document-frequency stopword threshold — on a small posts table (a demo dataset, not a huge
+	 * corpus) a perfectly ordinary search word can appear in a majority of rows and silently match
+	 * nothing under NATURAL LANGUAGE MODE. Boolean mode has no such threshold. Strips characters
+	 * boolean mode treats as operators so user input can't be interpreted as query syntax.
+	 */
+	private function buildBooleanMatchTerm( required string rawQuery ) {
+		var cleaned = reReplace( arguments.rawQuery, "[+\-<>()~*""@]", " ", "all" );
+		var words = listToArray( cleaned, " ", false );
+		var terms = [];
+		for ( var w in words ) {
+			if ( len( trim( w ) ) ) terms.append( "+" & trim( w ) & "*" );
+		}
+		return terms.toList( " " );
+	}
+
+	// =========================================================================
+	// Comments
+	// =========================================================================
+
+	/**
+	 * Filters: username, forum, post_id_short, deleted (0|1|all), before (unix ts), limit
+	 */
+	function getComments( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		var deleted = f.keyExists( "deleted" ) ? f.deleted : "0";
+		if ( deleted == "0" ) {
+			wheres.append( "C.deleted = 0" );
+		} else if ( deleted == "1" ) {
+			wheres.append( "C.deleted = 1" );
+		}
+
+		if ( f.keyExists( "username" ) && len( f.username ) ) {
+			wheres.append( "U.user_name = :username" );
+			params[ "username" ] = { value: f.username, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "forum" ) && len( f.forum ) ) {
+			wheres.append( "F.display = :forum" );
+			params[ "forum" ] = { value: f.forum, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "post_id_short" ) && len( f.post_id_short ) ) {
+			wheres.append( "P.id_short = :postIdShort" );
+			params[ "postIdShort" ] = { value: f.post_id_short, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "before" ) && f.before > 0 ) {
+			wheres.append( "UNIX_TIMESTAMP(C.created_at) < :before" );
+			params[ "before" ] = { value: f.before, cfsqltype: "cf_sql_bigint" };
+		}
+
+		// Exclude private forums from unscoped queries
+		if ( !( f.keyExists( "forum" ) && len( f.forum ) ) ) {
+			wheres.append( "F.is_private = 0" );
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 25, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(C.id)        AS id,
+				C.id_short,
+				C.body,
+				C.deleted,
+				UNIX_TIMESTAMP(C.created_at) AS created_utc,
+				BIN_TO_UUID(C.users_id)  AS users_id,
+				U.user_name,
+				BIN_TO_UUID(C.forums_id) AS forums_id,
+				F.display                AS forum,
+				BIN_TO_UUID(C.posts_id)  AS posts_id,
+				P.id_short               AS post_id_short,
+				P.title                  AS post_title,
+				U2.user_name             AS post_author,
+				BIN_TO_UUID(C.parent_id) AS parent_id,
+				PC.id_short              AS parent_id_short,
+				U3.user_name             AS parent_author,
+				COALESCE((SELECT SUM(V.vote) FROM Votes V WHERE V.comments_id = C.id), 0) AS vote_score
+			FROM Comments C
+			JOIN Users U ON U.id = C.users_id
+			LEFT JOIN Forums F ON F.id = C.forums_id
+			LEFT JOIN Posts P ON P.id = C.posts_id
+			LEFT JOIN Users U2 ON U2.id = P.users_id
+			LEFT JOIN Comments PC ON PC.id = C.parent_id
+			LEFT JOIN Users U3 ON U3.id = PC.users_id
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY C.created_at DESC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// Users
+	// =========================================================================
+
+	/**
+	 * Filters: q (username search), permission, limit
+	 */
+	function getUsers( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "q" ) && len( f.q ) ) {
+			wheres.append( "U.user_name LIKE :q" );
+			params[ "q" ] = { value: "%" & f.q & "%", cfsqltype: "cf_sql_varchar" };
+		}
+
+		if ( f.keyExists( "permission" ) && len( f.permission ) ) {
+			wheres.append( "
+				EXISTS (
+					SELECT 1 FROM UsersPermissions UP2
+					JOIN Permissions P2 ON UP2.permissions_id = P2.id
+					WHERE UP2.users_id = U.id AND P2.permission = :permission
+				)
+			" );
+			params[ "permission" ] = { value: uCase( f.permission ), cfsqltype: "cf_sql_varchar" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 100, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(U.id) AS id,
+				U.id_short,
+				U.user_name,
+				U.email,
+				UNIX_TIMESTAMP(U.created_at) AS created_utc,
+				UNIX_TIMESTAMP(U.updated_at) AS updated_utc,
+				(
+					SELECT GROUP_CONCAT(P.permission)
+					FROM UsersPermissions UP
+					JOIN Permissions P ON UP.permissions_id = P.id
+					WHERE UP.users_id = U.id
+				) AS permissions
+			FROM Users U
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY U.user_name ASC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// Forums
+	// =========================================================================
+
+	/**
+	 * Filters: q (display search), is_private (0|1), owner (username), limit
+	 */
+	function getForums( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "q" ) && len( f.q ) ) {
+			wheres.append( "F.display LIKE :q" );
+			params[ "q" ] = { value: "%" & f.q & "%", cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "is_private" ) && len( f.is_private ) ) {
+			wheres.append( "F.is_private = :isPrivate" );
+			params[ "isPrivate" ] = { value: val( f.is_private ), cfsqltype: "cf_sql_integer" };
+		}
+		if ( f.keyExists( "owner" ) && len( f.owner ) ) {
+			wheres.append( "OWN.user_name = :owner" );
+			params[ "owner" ] = { value: f.owner, cfsqltype: "cf_sql_varchar" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 100, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(F.id)          AS id,
+				F.id_short,
+				F.display,
+				F.about,
+				F.icon,
+				F.is_private,
+				F.deleted,
+				UNIX_TIMESTAMP(F.created_at) AS created_utc,
+				UNIX_TIMESTAMP(F.updated_at) AS updated_utc,
+				BIN_TO_UUID(F.owner)       AS owner_id,
+				OWN.user_name              AS owner,
+				BIN_TO_UUID(F.permissions_id) AS permissions_id,
+				(SELECT COUNT(*) FROM UsersForums UF WHERE UF.forums_id = F.id) AS subscriber_count,
+				(SELECT COUNT(*) FROM Posts P WHERE P.forums_id = F.id AND P.deleted = 0) AS post_count
+			FROM Forums F
+			JOIN Users OWN ON OWN.id = F.owner
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY F.display ASC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	/**
+	 * Top public forums by subscriber count — for a "Popular Forums" sidebar fallback when a
+	 * viewer has nothing more specific to show (anonymous, or no recently-viewed posts yet).
+	 * Public only: a private forum's existence isn't shown to a non-member anywhere else in the
+	 * app (see AppRouter.bx::searchRoute's identical is_private gate on searchForums), so this
+	 * stays consistent rather than leaking private forum names into a generic sidebar widget.
+	 */
+	function getPopularForums( numeric limit = 5 ) {
+		return variables.db.run(
+			"SELECT
+				F.id_short,
+				F.display,
+				F.about,
+				(SELECT COUNT(*) FROM UsersForums UF WHERE UF.forums_id = F.id) AS subscriber_count
+			FROM Forums F
+			WHERE F.deleted = 0 AND F.is_private = 0
+			ORDER BY subscriber_count DESC, F.display ASC
+			LIMIT :limitVal",
+			{ limitVal: { value: arguments.limit, cfsqltype: "cf_sql_integer" } }
+		);
+	}
+
+	// =========================================================================
+	// Votes
+	// =========================================================================
+
+	/**
+	 * Filters: username, type (post|comment), value (1|-1), post_id_short, before, limit
+	 */
+	function getVotes( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "username" ) && len( f.username ) ) {
+			wheres.append( "U.user_name = :username" );
+			params[ "username" ] = { value: f.username, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "value" ) && len( f.value ) ) {
+			wheres.append( "V.vote = :voteValue" );
+			params[ "voteValue" ] = { value: val( f.value ), cfsqltype: "cf_sql_integer" };
+		}
+		if ( f.keyExists( "post_id_short" ) && len( f.post_id_short ) ) {
+			wheres.append( "P.id_short = :postIdShort" );
+			params[ "postIdShort" ] = { value: f.post_id_short, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "type" ) && f.type == "post" ) {
+			wheres.append( "V.posts_id IS NOT NULL" );
+		}
+		if ( f.keyExists( "type" ) && f.type == "comment" ) {
+			wheres.append( "V.comments_id IS NOT NULL" );
+		}
+		if ( f.keyExists( "before" ) && f.before > 0 ) {
+			wheres.append( "UNIX_TIMESTAMP(V.created_at) < :before" );
+			params[ "before" ] = { value: f.before, cfsqltype: "cf_sql_bigint" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 50, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(V.id)        AS id,
+				V.vote,
+				UNIX_TIMESTAMP(V.created_at) AS created_utc,
+				U.user_name,
+				P.id_short               AS post_id_short,
+				P.title                  AS post_title,
+				C.id_short               AS comment_id_short,
+				SUBSTRING(C.body, 1, 100) AS comment_excerpt
+			FROM Votes V
+			JOIN Users U ON U.id = V.users_id
+			LEFT JOIN Posts P ON P.id = V.posts_id
+			LEFT JOIN Comments C ON C.id = V.comments_id
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY V.created_at DESC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// Bookmarks
+	// =========================================================================
+
+	/**
+	 * Filters: username, forum, before, limit
+	 */
+	function getBookmarks( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "username" ) && len( f.username ) ) {
+			wheres.append( "U.user_name = :username" );
+			params[ "username" ] = { value: f.username, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "forum" ) && len( f.forum ) ) {
+			wheres.append( "F.display = :forum" );
+			params[ "forum" ] = { value: f.forum, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "before" ) && f.before > 0 ) {
+			wheres.append( "UNIX_TIMESTAMP(B.created_at) < :before" );
+			params[ "before" ] = { value: f.before, cfsqltype: "cf_sql_bigint" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 50, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(B.id)        AS id,
+				UNIX_TIMESTAMP(B.created_at) AS created_utc,
+				U.user_name,
+				P.id_short               AS post_id_short,
+				P.title                  AS post_title,
+				P.post_type,
+				F.display                AS forum,
+				F.icon                   AS forum_icon
+			FROM Bookmarks B
+			JOIN Users U ON U.id = B.users_id
+			JOIN Posts P ON P.id = B.posts_id
+			JOIN Forums F ON F.id = P.forums_id
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY B.created_at DESC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// Notifications
+	// =========================================================================
+
+	/**
+	 * Filters: username (recipient), is_read (0|1), type, before, limit
+	 */
+	function getNotifications( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "username" ) && len( f.username ) ) {
+			wheres.append( "U.user_name = :username" );
+			params[ "username" ] = { value: f.username, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "is_read" ) && len( f.is_read ) ) {
+			wheres.append( "N.is_read = :isRead" );
+			params[ "isRead" ] = { value: val( f.is_read ), cfsqltype: "cf_sql_integer" };
+		}
+		if ( f.keyExists( "type" ) && len( f.type ) ) {
+			wheres.append( "N.type = :notifType" );
+			params[ "notifType" ] = { value: f.type, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "before" ) && f.before > 0 ) {
+			wheres.append( "UNIX_TIMESTAMP(N.created_at) < :before" );
+			params[ "before" ] = { value: f.before, cfsqltype: "cf_sql_bigint" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 50, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(N.id)        AS id,
+				N.type,
+				N.is_read,
+				UNIX_TIMESTAMP(N.created_at) AS created_utc,
+				U.user_name              AS recipient,
+				A.user_name              AS actor,
+				P.id_short               AS post_id_short,
+				P.title                  AS post_title,
+				C.id_short               AS comment_id_short,
+				SUBSTRING(C.body, 1, 100) AS comment_excerpt
+			FROM Notifications N
+			JOIN Users U ON U.id = N.users_id
+			JOIN Users A ON A.id = N.actor_id
+			LEFT JOIN Posts P ON P.id = N.posts_id
+			LEFT JOIN Comments C ON C.id = N.comments_id
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY N.created_at DESC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// History (view log)
+	// =========================================================================
+
+	/**
+	 * Filters: username, forum, post_id_short, before, limit
+	 */
+	function getHistory( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "username" ) && len( f.username ) ) {
+			wheres.append( "U.user_name = :username" );
+			params[ "username" ] = { value: f.username, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "forum" ) && len( f.forum ) ) {
+			wheres.append( "F.display = :forum" );
+			params[ "forum" ] = { value: f.forum, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "post_id_short" ) && len( f.post_id_short ) ) {
+			wheres.append( "P.id_short = :postIdShort" );
+			params[ "postIdShort" ] = { value: f.post_id_short, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "before" ) && f.before > 0 ) {
+			wheres.append( "UNIX_TIMESTAMP(H.created_at) < :before" );
+			params[ "before" ] = { value: f.before, cfsqltype: "cf_sql_bigint" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 50, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(H.id)        AS id,
+				UNIX_TIMESTAMP(H.created_at) AS created_utc,
+				U.user_name,
+				F.display                AS forum,
+				P.id_short               AS post_id_short,
+				P.title                  AS post_title
+			FROM History H
+			JOIN Users U ON U.id = H.users_id
+			JOIN Posts P ON P.id = H.posts_id
+			JOIN Forums F ON F.id = P.forums_id
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY H.created_at DESC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// Top viewed posts (aggregate)
+	// =========================================================================
+
+	/**
+	 * Filters: forum, hours (default 24), limit, offset, viewerId, isAdmin — same privacy contract
+	 * as getPosts() above (applied unconditionally, not just for a scoped `forum` filter).
+	 */
+	function getTopViewedPosts( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [ "P.deleted = 0" ];
+		var params = {};
+
+		var hrs = ( f.keyExists( "hours" ) && val( f.hours ) > 0 ) ? val( f.hours ) : 24;
+		params[ "hours" ] = { value: hrs, cfsqltype: "cf_sql_integer" };
+
+		if ( f.keyExists( "forum" ) && len( f.forum ) ) {
+			wheres.append( "F.display = :forum" );
+			params[ "forum" ] = { value: f.forum, cfsqltype: "cf_sql_varchar" };
+		}
+
+		if ( !( f.keyExists( "isAdmin" ) && f.isAdmin ) ) {
+			var viewerId = f.keyExists( "viewerId" ) ? f.viewerId : "";
+			if ( len( viewerId ) ) {
+				wheres.append( "(F.is_private = 0 OR EXISTS (SELECT 1 FROM UsersForums UF WHERE UF.users_id = UUID_TO_BIN(:viewerId) AND UF.forums_id = F.id))" );
+				params[ "viewerId" ] = { value: viewerId, cfsqltype: "cf_sql_varchar" };
+			} else {
+				wheres.append( "F.is_private = 0" );
+			}
+		}
+
+		params[ "limitVal" ]  = { value: f.keyExists( "limit" ) ? f.limit : 50, cfsqltype: "cf_sql_integer" };
+		params[ "offsetVal" ] = { value: f.keyExists( "offset" ) ? f.offset : 0, cfsqltype: "cf_sql_integer" };
+
+		// Same shape as getPosts() above: vote/comment counts are joined from small per-page
+		// aggregates (scoped to FilteredPosts, computed after the LIMIT/OFFSET) instead of
+		// correlated subqueries repeated per row.
+		var sql = "
+			WITH RecentViews AS (
+				SELECT posts_id, COUNT(*) AS view_count
+				FROM History H
+				WHERE H.created_at >= NOW() - INTERVAL :hours HOUR
+				GROUP BY posts_id
+			),
+			FilteredPosts AS (
+				SELECT
+					P.id,
+					P.id_short,
+					P.post_type,
+					P.title,
+					P.body,
+					P.pinned,
+					UNIX_TIMESTAMP(P.created_at) AS created_utc,
+					UNIX_TIMESTAMP(P.updated_at) AS updated_utc,
+					BIN_TO_UUID(P.users_id)  AS users_id,
+					U.user_name,
+					BIN_TO_UUID(P.forums_id) AS forums_id,
+					F.display                AS forum,
+					F.is_private,
+					L.url                    AS link_url,
+					L.title                  AS link_title,
+					L.description            AS link_description,
+					L.image                  AS link_image,
+					RV.view_count
+				FROM RecentViews RV
+				JOIN Posts P ON P.id = RV.posts_id
+				JOIN Users U ON U.id = P.users_id
+				JOIN Forums F ON F.id = P.forums_id
+				LEFT JOIN PostsLinks PL ON PL.posts_id = P.id
+				LEFT JOIN Links L ON L.id = PL.links_id
+			" & variables.db.whereClause( wheres ) & "
+				ORDER BY RV.view_count DESC, P.id_short
+				LIMIT :limitVal OFFSET :offsetVal
+			),
+			VoteScores AS (
+				SELECT V.posts_id, SUM(V.vote) AS vote_score
+				FROM Votes V
+				WHERE V.posts_id IN (SELECT id FROM FilteredPosts)
+				GROUP BY V.posts_id
+			),
+			CommentCounts AS (
+				SELECT C.posts_id, COUNT(*) AS comment_count
+				FROM Comments C
+				WHERE C.posts_id IN (SELECT id FROM FilteredPosts) AND C.deleted = 0
+				GROUP BY C.posts_id
+			)
+			SELECT
+				BIN_TO_UUID(FP.id) AS id,
+				FP.id_short, FP.post_type, FP.title, FP.body, FP.pinned,
+				FP.created_utc, FP.updated_utc, FP.users_id, FP.user_name, FP.forums_id,
+				FP.forum, FP.is_private, FP.link_url, FP.link_title, FP.link_description,
+				FP.link_image, FP.view_count,
+				COALESCE(VS.vote_score, 0)    AS vote_score,
+				COALESCE(CC.comment_count, 0) AS comment_count
+			FROM FilteredPosts FP
+			LEFT JOIN VoteScores VS ON VS.posts_id = FP.id
+			LEFT JOIN CommentCounts CC ON CC.posts_id = FP.id
+			ORDER BY FP.view_count DESC, FP.id_short
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// Links
+	// =========================================================================
+
+	/**
+	 * Filters: q (url or title search), post_id_short, limit
+	 */
+	function getLinks( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "q" ) && len( f.q ) ) {
+			wheres.append( "(L.url LIKE :q OR L.title LIKE :q)" );
+			params[ "q" ] = { value: "%" & f.q & "%", cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "post_id_short" ) && len( f.post_id_short ) ) {
+			wheres.append( "P.id_short = :postIdShort" );
+			params[ "postIdShort" ] = { value: f.post_id_short, cfsqltype: "cf_sql_varchar" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 50, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(L.id)        AS id,
+				L.url,
+				L.title,
+				L.description,
+				L.image,
+				UNIX_TIMESTAMP(L.created_at) AS created_utc,
+				UNIX_TIMESTAMP(L.updated_at) AS updated_utc,
+				P.id_short               AS post_id_short,
+				P.title                  AS post_title
+			FROM Links L
+			LEFT JOIN PostsLinks PL ON PL.links_id = L.id
+			LEFT JOIN Posts P ON P.id = PL.posts_id
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY L.created_at DESC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+	// =========================================================================
+	// Achievements
+	// =========================================================================
+
+	/**
+	 * Filters: slug, secret (0|1), limit
+	 * Returns achievement definitions with nested tiers array.
+	 */
+	function getAchievements( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "slug" ) && len( f.slug ) ) {
+			wheres.append( "A.slug = :slug" );
+			params[ "slug" ] = { value: f.slug, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "secret" ) ) {
+			wheres.append( "A.secret = :secret" );
+			params[ "secret" ] = { value: val( f.secret ), cfsqltype: "cf_sql_integer" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 100, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(A.id) AS id,
+				A.id_short,
+				A.slug,
+				A.category,
+				A.name,
+				A.secret,
+				A.metric,
+				A.sort_order,
+				UNIX_TIMESTAMP(A.created_at) AS created_utc
+			FROM Achievements A
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY A.sort_order ASC
+			LIMIT :limitVal
+		";
+
+		var rows = variables.db.run( sql, params );
+
+		var tiersSql = "
+			SELECT AT2.tier, AT2.label, AT2.threshold, AT2.threshold_value, AT2.threshold_max, AT2.title, AT2.flavor
+			FROM AchievementTiers AT2
+			WHERE AT2.achievements_id = UUID_TO_BIN(:achievementId)
+			ORDER BY AT2.tier ASC
+		";
+		for ( var row in rows ) {
+			row[ "tiers" ] = variables.db.run( tiersSql, { achievementId: { value: row.id, cfsqltype: "cf_sql_varchar" } } );
+		}
+
+		return rows;
+	}
+
+	/**
+	 * Single achievement by slug with tiers.
+	 */
+	function getAchievementBySlug( required string slug ) {
+		var rows = getAchievements( { "slug": arguments.slug } );
+		return rows.len() ? rows[ 1 ] : {};
+	}
+
+	/**
+	 * Filters: username, slug, limit
+	 * Returns user achievement awards with tier detail.
+	 */
+	function getAwardedAchievements( struct filters = {} ) {
+		var f      = arguments.filters;
+		var wheres = [];
+		var params = {};
+
+		if ( f.keyExists( "username" ) && len( f.username ) ) {
+			wheres.append( "U.user_name = :username" );
+			params[ "username" ] = { value: f.username, cfsqltype: "cf_sql_varchar" };
+		}
+		if ( f.keyExists( "slug" ) && len( f.slug ) ) {
+			wheres.append( "A.slug = :slug" );
+			params[ "slug" ] = { value: f.slug, cfsqltype: "cf_sql_varchar" };
+		}
+
+		params[ "limitVal" ] = { value: f.keyExists( "limit" ) ? f.limit : 100, cfsqltype: "cf_sql_integer" };
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(UA.id) AS id,
+				U.user_name,
+				A.slug,
+				A.category,
+				A.name,
+				A.secret,
+				A.metric,
+				UA.current_tier,
+				AT2.label        AS tier_label,
+				AT2.threshold,
+				AT2.threshold_value,
+				AT2.threshold_max,
+				AT2.title        AS tier_title,
+				AT2.flavor       AS tier_flavor,
+				UNIX_TIMESTAMP(UA.unlocked_at) AS unlocked_utc,
+				UNIX_TIMESTAMP(UA.updated_at)  AS updated_utc
+			FROM UserAchievements UA
+			JOIN Achievements A ON A.id = UA.achievements_id
+			JOIN Users U ON U.id = UA.users_id
+			JOIN AchievementTiers AT2 ON AT2.achievements_id = A.id AND AT2.tier = UA.current_tier
+		" & variables.db.whereClause( wheres ) & "
+			ORDER BY A.sort_order ASC
+			LIMIT :limitVal
+		";
+
+		return variables.db.run( sql, params );
+	}
+
+}

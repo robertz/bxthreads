@@ -1,0 +1,287 @@
+/**
+ * Represents a single comment in a post's thread.
+ *
+ * Comments are threaded: a root comment has no `parent_id`; replies store the
+ * full UUID of their parent in `parent_id`. The full hierarchy is reconstructed
+ * in-application by `Post.buildCommentTree()`.
+ *
+ * @property {string}  id         - Full UUID of the comment
+ * @property {string}  id_short   - First 8 characters of the UUID, used in URLs
+ * @property {string}  parent_id  - UUID of the parent comment, or empty for root comments
+ * @property {string}  forums_id  - UUID of the forum this comment belongs to
+ * @property {string}  posts_id   - UUID of the post this comment belongs to
+ * @property {string}  users_id   - UUID of the author
+ * @property {string}  body       - Comment body (markdown)
+ * @property {numeric} deleted    - 0 = visible, 1 = soft-deleted
+ * @property {numeric} created_utc - Creation time as UNIX timestamp
+ * @property {numeric} updated_utc - Last-update time as UNIX timestamp
+ */
+class accessors="true" {
+
+	property name="id";
+	property name="id_short";
+	property name="parent_id";
+	property name="forums_id";
+	property name="posts_id";
+	property name="users_id";
+	property name="body";
+	property name="deleted";
+	property name="created_utc";
+	property name="updated_utc";
+
+	/**
+	 * Initializes the bean with empty/default values.
+	 * Called automatically by AppContext's scanDirectory() on instantiation.
+	 *
+	 * @return {Comment} This instance.
+	 */
+	function init(){
+		variables.populate    = new "lib.AppContext"().get( "Populate" );
+		variables.id          = "";
+		variables.id_short    = "";
+		variables.parent_id   = "";
+		variables.forums_id   = "";
+		variables.posts_id    = "";
+		variables.users_id    = "";
+		variables.body        = "";
+		variables.deleted     = 0;
+		variables.created_utc  = "";
+		variables.updated_utc  = "";
+		return this;
+	}
+
+	/**
+	 * Returns a plain-struct snapshot of all comment properties.
+	 * Used for serialization and populator round-trips.
+	 *
+	 * @return {struct} All comment fields.
+	 */
+	function getMemento(){
+		return {
+			"id": variables.id,
+			"id_short": variables.id_short,
+			"parent_id": variables.parent_id,
+			"forums_id": variables.forums_id,
+			"posts_id": variables.posts_id,
+			"users_id": variables.users_id,
+			"body": variables.body,
+			"deleted": variables.deleted,
+			"created_utc": variables.created_utc,
+			"updated_utc": variables.updated_utc
+		}
+	}
+
+	/**
+	 * Loads a comment by its full UUID and populates this bean.
+	 * Throws on database error rather than returning an empty bean.
+	 *
+	 * @param {string} id - Full UUID of the comment.
+	 * @return {Comment} This instance, populated if the comment was found.
+	 */
+	function getById( required string id ){
+		var commentId = arguments.id;
+		var cacheKey  = "comment:#left( commentId, 8 )#";
+		var row       = {};
+		row = cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => {
+				var sql = "
+					SELECT
+						BIN_TO_UUID(id) AS id,
+						id_short,
+						BIN_TO_UUID(parent_id) AS parent_id,
+						BIN_TO_UUID(forums_id) AS forums_id,
+						BIN_TO_UUID(posts_id) AS posts_id,
+						BIN_TO_UUID(users_id) AS users_id,
+						body,
+						deleted,
+						UNIX_TIMESTAMP(created_at) AS created_utc,
+						UNIX_TIMESTAMP(updated_at) AS updated_utc
+					FROM Comments
+					WHERE id = UUID_TO_BIN(:id)
+					LIMIT 1
+				";
+				var res = queryExecute( sql, { "id": { value: commentId, cfsqltype: "cf_sql_varchar" } }, { returnType: "array" } );
+				return res.len() ? res[ 1 ] : {};
+			}
+		);
+		if ( !row.isEmpty() ) {
+			variables.populate.populateFromStruct( target = this, memento = row );
+		}
+		return this;
+	}
+
+	/**
+	 * Loads a comment by its 8-character short ID and populates this bean.
+	 * Throws on database error rather than returning an empty bean.
+	 *
+	 * @param {string} id_short - The 8-character short ID from the URL.
+	 * @return {Comment} This instance, populated if the comment was found.
+	 */
+	function getByIdShort( required string id_short ){
+		var shortId  = arguments.id_short;
+		var cacheKey = "comment:#shortId#";
+		var row      = {};
+		row = cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => {
+				var sql = "
+					SELECT
+						BIN_TO_UUID(id) AS id,
+						id_short,
+						BIN_TO_UUID(parent_id) AS parent_id,
+						BIN_TO_UUID(forums_id) AS forums_id,
+						BIN_TO_UUID(posts_id) AS posts_id,
+						BIN_TO_UUID(users_id) AS users_id,
+						body,
+						deleted,
+						UNIX_TIMESTAMP(created_at) AS created_utc,
+						UNIX_TIMESTAMP(updated_at) AS updated_utc
+					FROM Comments
+					WHERE id_short = :id_short
+					LIMIT 1
+				";
+				var res = queryExecute( sql, { "id_short": { value: shortId, cfsqltype: "cf_sql_varchar" } }, { returnType: "array" } );
+				return res.len() ? res[ 1 ] : {};
+			}
+		);
+		if ( !row.isEmpty() ) {
+			variables.populate.populateFromStruct( target = this, memento = row );
+		}
+		return this;
+	}
+
+	/**
+	 * Re-loads this bean from the database using the current `id_short`.
+	 *
+	 * @return {Comment} This instance with refreshed data.
+	 */
+	function reload(){
+		getByIdShort( variables.id_short );
+		return this;
+	}
+
+	/**
+	 * Persists the comment to the database and invalidates the parent post's cache.
+	 *
+	 * Behaves as an upsert: if the bean has not been loaded (`hasLoaded()` is false)
+	 * a new comment is inserted with a generated UUID; otherwise the existing row's
+	 * `body` and `deleted` fields are updated.
+	 *
+	 * All cache entries for the parent post are invalidated via `cacheFilter` using
+	 * the pattern `post:{postIdShort}*`. This covers the post record itself, all
+	 * comment tree variants, and link data.
+	 *
+	 * Requires `forums_id`, `posts_id`, `users_id`, and `body` to be set.
+	 * Throws a ValidationException if any required field is missing.
+	 * On database error the transaction is rolled back and the exception is re-thrown.
+	 *
+	 * @return {Comment} This instance (for method chaining).
+	 */
+	function save(){
+		// Validate required fields
+		if ( !len( variables.forums_id ) ) {
+			throw( message = "forums_id is required", type = "ValidationException" );
+		}
+		if ( !len( variables.posts_id ) ) {
+			throw( message = "posts_id is required", type = "ValidationException" );
+		}
+		if ( !len( variables.users_id ) ) {
+			throw( message = "users_id is required", type = "ValidationException" );
+		}
+		if ( !len( variables.body ) ) {
+			throw( message = "body is required", type = "ValidationException" );
+		}
+
+		transaction {
+			try {
+				var loaded = hasLoaded();
+				if(!loaded) {
+					variables.id = lcase(createGUID());
+					variables.id_short = left(variables.id, 8);
+				}
+				var sql = "";
+				var qParams = {
+					"id"        : { value : variables.id, cfsqltype : "cf_sql_varchar" },
+					"parent_id" : { value : variables.parent_id, cfsqltype : "cf_sql_varchar", null: !len(variables.parent_id) },
+					"forums_id" : { value : variables.forums_id, cfsqltype : "cf_sql_varchar" },
+					"posts_id"  : { value : variables.posts_id, cfsqltype : "cf_sql_varchar" },
+					"users_id"  : { value : variables.users_id, cfsqltype : "cf_sql_varchar" },
+					"body"      : { value : variables.body, cfsqltype : "cf_sql_varchar" },
+					"deleted"	: { value : variables.deleted, cfsqltype: "cf_sql_tinyint" }
+				};
+
+				if(loaded){ // update the comment
+					sql = "
+						UPDATE Comments
+						SET body = :body, deleted = :deleted
+						WHERE id = UUID_TO_BIN(:id)
+					";
+				}
+				else{ // create the comment
+					sql = "
+						INSERT INTO Comments (id, parent_id, forums_id, posts_id, users_id, body, deleted)
+						VALUES (UUID_TO_BIN(:id), UUID_TO_BIN(:parent_id), UUID_TO_BIN(:forums_id), UUID_TO_BIN(:posts_id), UUID_TO_BIN(:users_id), :body, :deleted)
+					";
+				}
+				queryExecute(sql, qParams);
+
+				var postIdShort = left( variables.posts_id, 8 );
+				cache( "dismalCache" ).getKeys()
+					.filter( key => key.startsWith( "post:#postIdShort#" ) )
+					.each( key => cache( "dismalCache" ).clear( key ) );
+				cache( "dismalCache" ).clear( "comment:#variables.id_short#" );
+
+				transaction action="commit";
+				if ( !loaded ) {
+					new "lib.AppContext"().get( "AchievementService" ).updateStreak( variables.users_id );
+				}
+				if ( !loaded ) {
+					new "lib.AppContext"().get( "ActivityService" ).log( variables.users_id, "create_comment", "comment", variables.id, { "posts_id": variables.posts_id } );
+					new "lib.AppContext"().get( "AchievementService" ).evaluate( variables.users_id );
+				}
+			} catch ( any e ) {
+				transaction action="rollback";
+				new "lib.AppContext"().get( "Logger" ).error( "Error saving comment: " & e.message & " " & e.detail );
+				throw( e );
+			}
+		}
+		return this;
+	}
+
+	/**
+	 * Returns whether this bean has been loaded with database data.
+	 *
+	 * @return {boolean} true if `id` is non-empty.
+	 */
+	function hasLoaded(){
+		return len( variables.id ) ? true : false;
+	}
+
+	// -------------------------------------------------------------------------
+	// Private
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Executes a SELECT query and populates this bean from the first result row.
+	 * Shared by `getById` and `getByIdShort` to avoid duplicating query/populate logic.
+	 * Throws on database error rather than returning an empty bean.
+	 *
+	 * @param {string} sql     - Parameterized SELECT statement.
+	 * @param {struct} qParams - Query parameter struct.
+	 * @return {Comment} This instance, populated if a row was found.
+	 */
+	private function load( required string sql, required struct qParams ){
+		try {
+			var res = queryExecute( arguments.sql, arguments.qParams, { returnType: "array" } );
+			if ( res.len() ) {
+				variables.populate.populateFromStruct( target = this, memento = res[ 1 ] );
+			}
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).error( "Error loading comment: " & e.message & " " & e.detail );
+			throw( e );
+		}
+		return this;
+	}
+
+}

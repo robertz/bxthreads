@@ -1,0 +1,872 @@
+/**
+ * Mutating, session-authenticated actions — the REST replacement for the source app's cbwire
+ * `wire:click`-driven mutations (wires/feed/item.bx, comments/tree.bx, comments/container.bx,
+ * comments/votestrip.bx, post/baseview.bx, widgets/forum/details.bx, user/settings.bx). Called
+ * via fetch() from public/assets/js/actions.js, which patches the DOM with the JSON/HTML
+ * fragment each endpoint returns rather than reloading the page.
+ *
+ * Not X-Api-Key gated (that's routes/ApiRouter.bx, for the admin skill integration) — these are
+ * plain session-cookie-authenticated actions, same identity as the page routes.
+ */
+class {
+
+	function register( required any app, required any router ) {
+		variables.app        = arguments.app;
+		variables.AppContext = new "lib.AppContext"();
+		variables.Session    = variables.AppContext.get( "Session" );
+		variables.Renderer   = new "lib.CommentRenderer"();
+		variables.Broadcast  = variables.AppContext.get( "Broadcast" );
+		variables.Presence   = variables.AppContext.get( "Presence" );
+
+		var r = arguments.router;
+
+		// Wraps every registered handler so an uncaught exception always returns this router's
+		// own {success:false, error:"..."} shape instead of the generic error middleware's
+		// {error:true, message:"..."} shape — see lib/JsonAction.bx.
+		var jsonAction = variables.AppContext.get( "JsonAction" );
+		var logger     = variables.AppContext.get( "Logger" );
+		var safeAction = ( fn ) => jsonAction.safeAction( logger, fn );
+
+		r.post( "/posts/:id_short/vote", safeAction( ( req, res ) => votePostAction( req, res ) ) );
+		r.post( "/posts/:id_short/bookmark", safeAction( ( req, res ) => toggleBookmarkAction( req, res ) ) );
+		r.put( "/posts/:id_short", safeAction( ( req, res ) => editPostAction( req, res ) ) );
+		r.delete( "/posts/:id_short", safeAction( ( req, res ) => deletePostAction( req, res ) ) );
+		r.post( "/posts/:id_short/pin", safeAction( ( req, res ) => togglePinAction( req, res ) ) );
+		r.post( "/posts/:id_short/comments", safeAction( ( req, res ) => addCommentAction( req, res ) ) );
+		r.get( "/posts/:id_short/comments-html", safeAction( ( req, res ) => commentsHtmlAction( req, res ) ) );
+		r.get( "/posts/:id_short/vote-score", safeAction( ( req, res ) => postVoteScoreAction( req, res ) ) );
+		r.get( "/feed/more", safeAction( ( req, res ) => moreFeedAction( req, res ) ) );
+		r.get( "/top-viewed/more", safeAction( ( req, res ) => moreTopViewedAction( req, res ) ) );
+		r.get( "/search/more", safeAction( ( req, res ) => moreSearchAction( req, res ) ) );
+
+		r.post( "/comments/:id_short/vote", safeAction( ( req, res ) => voteCommentAction( req, res ) ) );
+		r.put( "/comments/:id_short", safeAction( ( req, res ) => editCommentAction( req, res ) ) );
+		r.delete( "/comments/:id_short", safeAction( ( req, res ) => deleteCommentAction( req, res ) ) );
+
+		r.post( "/forums/:display/subscribe", safeAction( ( req, res ) => toggleSubscribeAction( req, res ) ) );
+		r.post( "/forums/:display/presence-ping", safeAction( ( req, res ) => presencePingAction( req, res ) ) );
+		r.post( "/posts/:id_short/presence-ping", safeAction( ( req, res ) => postPresencePingAction( req, res ) ) );
+		r.put( "/forums/:display", safeAction( ( req, res ) => saveForumDetailsAction( req, res ) ) );
+		r.post( "/forums/:display/privacy-toggle", safeAction( ( req, res ) => toggleForumPrivacyAction( req, res ) ) );
+		r.post( "/forums/:display/moderators", safeAction( ( req, res ) => addForumModeratorAction( req, res ) ) );
+		r.delete( "/forums/:display/moderators/:username", safeAction( ( req, res ) => removeForumModeratorAction( req, res ) ) );
+		r.post( "/forums/:display/members", safeAction( ( req, res ) => addForumMemberAction( req, res ) ) );
+		r.delete( "/forums/:display/members/:username", safeAction( ( req, res ) => removeForumMemberAction( req, res ) ) );
+		r.get( "/forums/:display/moderators", safeAction( ( req, res ) => getForumModeratorsAction( req, res ) ) );
+		r.post( "/forums", safeAction( ( req, res ) => createForumAction( req, res ) ) );
+
+		r.get( "/notifications/recent", safeAction( ( req, res ) => recentNotificationsAction( req, res ) ) );
+		r.post( "/notifications/mark-read", safeAction( ( req, res ) => markNotificationsReadAction( req, res ) ) );
+
+		r.post( "/settings/password", safeAction( ( req, res ) => changePasswordAction( req, res ) ) );
+	}
+
+	// =========================================================================
+	// Posts
+	// =========================================================================
+
+	function votePostAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+
+		var voteValue = val( arguments.req.body.value ?: 0 );
+		var uid       = arguments.res.locals.currentUser.id;
+		var Vote      = variables.AppContext.get( "Vote" );
+
+		var result = Vote.toggle( uid, voteValue, post.getId() );
+		variables.AppContext.get( "AchievementService" ).checkUpvoteMilestone( voteValue, result.action, uid, post.getUsers_id(), post.getId() );
+		if ( result.action == "created" ) {
+			variables.AppContext.get( "AchievementService" ).evaluate( uid );
+			if ( uid != post.getUsers_id() ) {
+				variables.AppContext.get( "AchievementService" ).evaluate( post.getUsers_id() );
+			}
+		}
+
+		variables.Broadcast.postVoteChanged( post.getId_short() );
+
+		ok( arguments.res, {
+			score: Vote.getScore( post.getId() ),
+			userVote: Vote.getUserVote( uid, post.getId() )
+		} );
+	}
+
+	function toggleBookmarkAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		var result = new "models.beans.Bookmark"().toggle( arguments.res.locals.currentUser.id, post.getId() );
+		ok( arguments.res, { bookmarked: result.action == "bookmarked" } );
+	}
+
+	function editPostAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		if ( !canManagePost( arguments.res, post ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var newBody = arguments.req.body.body ?: "";
+		if ( !len( trim( newBody ) ) ) {
+			fail( arguments.res, "body is required", 400 );
+			return;
+		}
+		post.setBody( newBody );
+		post.save();
+		ok( arguments.res, { bodyHtml: enhanceAnchors( getSafeHTML( markdown( newBody ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) } );
+	}
+
+	function deletePostAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		if ( !canManagePost( arguments.res, post ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		post.setDeleted( 1 );
+		post.save();
+		ok( arguments.res, { deleted: true } );
+	}
+
+	function togglePinAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		if ( !isForumModerator( arguments.res, post.getForums_id() ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		post.togglePin();
+		ok( arguments.res, { pinned: post.getPinned() } );
+	}
+
+	function addCommentAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		var body     = trim( arguments.req.body.body ?: "" );
+		var parentId = arguments.req.body.parent_id ?: "";
+		if ( !len( body ) ) {
+			fail( arguments.res, "body is required", 400 );
+			return;
+		}
+
+		var uid = arguments.res.locals.currentUser.id;
+
+		var comment = new "models.beans.Comment"();
+		comment.setParent_id( parentId );
+		comment.setForums_id( post.getForums_id() );
+		comment.setPosts_id( post.getId() );
+		comment.setUsers_id( uid );
+		comment.setBody( body );
+		comment.setDeleted( 0 );
+		comment.save();
+
+		// Auto-upvote own comment, matching the source app's addComment() actions.
+		variables.AppContext.get( "Vote" ).toggle( uid, 1, "", comment.getId() );
+
+		// Notify: comment_on_post (root comment) or reply_to_comment (reply), skip self-notify.
+		if ( !len( parentId ) ) {
+			if ( uid != post.getUsers_id() ) {
+				variables.AppContext.get( "Notification" ).create( post.getUsers_id(), uid, post.getId(), "", "comment_on_post" );
+				variables.Broadcast.notificationReceived( post.getUsers_id() );
+			}
+		} else {
+			var parentComment = new "models.beans.Comment"().getById( parentId );
+			if ( parentComment.hasLoaded() && uid != parentComment.getUsers_id() ) {
+				variables.AppContext.get( "Notification" ).create( parentComment.getUsers_id(), uid, post.getId(), comment.getId(), "reply_to_comment" );
+				variables.Broadcast.notificationReceived( parentComment.getUsers_id() );
+			}
+		}
+
+		variables.AppContext.get( "AchievementService" ).evaluate( uid );
+		variables.Broadcast.commentAdded( post.getId_short() );
+
+		var node = comment.getMemento();
+		// getMemento() right after an insert carries an empty created_utc — the DB sets it via
+		// DEFAULT CURRENT_TIMESTAMP, never read back — so momentFrom() gets "" and throws.
+		node[ "user_name" ]   = arguments.res.locals.currentUser.user_name;
+		node[ "vote_score" ]  = 1;
+		node[ "created_utc" ] = createObject( "java", "java.time.Instant" ).now().getEpochSecond();
+		node[ "children" ]    = [];
+
+		arguments.res.status( 201 ).send( variables.Renderer.renderNode( node, uid, isForumModerator( arguments.res, post.getForums_id() ), post.getUsers_id() ) );
+	}
+
+	/**
+	 * Read-only fragment used by public/assets/js/realtime.js to re-render the whole comment tree
+	 * on another open tab after a comment-added/comment-vote-changed broadcast — no auth required,
+	 * same visibility as the post-detail page itself (a deleted/private-forum post 404s the page
+	 * too, so this mirrors that rather than leaking anything the page wouldn't already show).
+	 */
+	function commentsHtmlAction( req, res ) {
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() || post.getDeleted() ) {
+			arguments.res.status( 404 ).send( "" );
+			return;
+		}
+		var uid = arguments.res.locals.currentUser.id;
+		var isMod = isForumModerator( arguments.res, post.getForums_id() );
+		var commentsTree = post.getCommentsTree();
+		if ( !commentsTree.len() ) {
+			arguments.res.send( '<p class="text-muted" data-no-comments>No comments yet.</p>' );
+			return;
+		}
+		var html = "";
+		for ( var node in commentsTree ) {
+			html &= variables.Renderer.renderNode( node, uid, isMod, post.getUsers_id() );
+		}
+		arguments.res.send( html );
+	}
+
+	/**
+	 * Read-only vote score/userVote for realtime.js's cross-tab post-vote-changed handler — same
+	 * shape votePostAction() itself returns, just without the mutation.
+	 */
+	function postVoteScoreAction( req, res ) {
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		var Vote = variables.AppContext.get( "Vote" );
+		var uid = arguments.res.locals.currentUser.id;
+		ok( arguments.res, {
+			score: Vote.getScore( post.getId() ),
+			userVote: Vote.getUserVote( uid, post.getId() )
+		} );
+	}
+
+	/**
+	 * Infinite-scroll "load more" fragment for the feed views (feed/forum.bxm, which also backs
+	 * /home and /f/all — see routes/AppRouter.bx::renderForumIndex()). Ported the source app's
+	 * scaffolding for this (models/beans/Feed.bx's cursor-paginated getHomeFeed()/getForumFeed(),
+	 * a `.feed-sentinel` marker div, a `loadMore()` wire action) but never found any client-side
+	 * trigger anywhere in the source app — no IntersectionObserver, no wire:intersect, nothing
+	 * wired to that sentinel in its own assets/js or built dist/ bundles — so this reuses the same
+	 * DismalDAO.getPosts({before:...}) cursor the initial page render already uses (simpler than
+	 * switching to the separate Feed bean just for this) and adds the one piece that was actually
+	 * missing: the client-side scroll trigger (see actions.js's IntersectionObserver below).
+	 *
+	 * `forum` is "" or "all" for the unscoped feed, or a forum's display name — matching
+	 * renderForumIndex()'s own forumParam convention exactly, including the same private-forum
+	 * gate (a non-member gets an empty 403 fragment, not page content to guess from).
+	 */
+	function moreFeedAction( req, res ) {
+		var forumParam = trim( arguments.req.query.forum ?: "" );
+		var before = val( arguments.req.query.before ?: 0 );
+		if ( !before ) {
+			fail( arguments.res, "before is required", 400 );
+			return;
+		}
+
+		var isScoped = len( forumParam ) && forumParam != "all";
+		if ( isScoped ) {
+			var forum = new "models.beans.Forum"().getByName( forumParam );
+			if ( !forum.hasLoaded() ) {
+				arguments.res.status( 404 ).send( "" );
+				return;
+			}
+			if (
+				forum.getIs_private()
+				&& !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+				&& !arguments.res.locals.subscribedForumIds.keyExists( forum.getId_short() )
+			) {
+				arguments.res.status( 403 ).send( "" );
+				return;
+			}
+		}
+
+		var limit = 20;
+		var filters = {
+			limit: limit,
+			before: before,
+			viewerId: arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "",
+			isAdmin: arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+		};
+		if ( isScoped ) filters.forum = forumParam;
+		var feed = variables.AppContext.get( "DismalDAO" ).getPosts( filters );
+
+		var uid = arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "";
+		decorateFeedWithUserState( feed, uid );
+
+		var perms = arguments.res.locals.currentUser.permissions;
+		var isAdmin = perms.listFind( "RENEGADE_ADMIN" );
+		var Renderer = new "lib.FeedItemRenderer"();
+		var html = "";
+		for ( var post in feed ) {
+			var isMod = isAdmin || perms.listFind( "FORUM_MODERATOR_" & uCase( post.forum ) );
+			html &= Renderer.renderCard( post, uid, isMod );
+		}
+
+		arguments.res.set( "X-Feed-Has-More", ( feed.len() >= limit ) ? "true" : "false" );
+		arguments.res.send( html );
+	}
+
+	function moreTopViewedAction( req, res ) {
+		var offset = val( arguments.req.query.offset ?: 0 );
+		var limit  = 20;
+		var feed = variables.AppContext.get( "DismalDAO" ).getTopViewedPosts( {
+			limit: limit,
+			offset: offset,
+			viewerId: arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "",
+			isAdmin: arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+		} );
+
+		var uid = arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "";
+		decorateFeedWithUserState( feed, uid );
+
+		var perms = arguments.res.locals.currentUser.permissions;
+		var isAdmin = perms.listFind( "RENEGADE_ADMIN" );
+		var Renderer = new "lib.FeedItemRenderer"();
+		var html = "";
+		for ( var post in feed ) {
+			var isMod = isAdmin || perms.listFind( "FORUM_MODERATOR_" & uCase( post.forum ) );
+			html &= Renderer.renderCard( post, uid, isMod );
+		}
+
+		arguments.res.set( "X-Feed-Has-More", ( feed.len() >= limit ) ? "true" : "false" );
+		arguments.res.send( html );
+	}
+
+	function moreSearchAction( req, res ) {
+		var rawQuery   = trim( arguments.req.query.q ?: "" );
+		var forumScope = trim( arguments.req.query.forum ?: "" );
+		var offset     = val( arguments.req.query.offset ?: 0 );
+		if ( !len( rawQuery ) ) {
+			fail( arguments.res, "q is required", 400 );
+			return;
+		}
+
+		var limit = 20;
+		var filters = {
+			limit: limit + 1,
+			offset: offset,
+			matchQuery: rawQuery,
+			viewerId: arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "",
+			isAdmin: arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+		};
+		if ( len( forumScope ) ) filters.forum = forumScope;
+		var feed = variables.AppContext.get( "DismalDAO" ).getPosts( filters );
+		var hasMoreAfterThis = feed.len() > limit;
+		if ( hasMoreAfterThis ) {
+			var trimmedFeed = [];
+			for ( var i = 1; i <= limit; i++ ) trimmedFeed.append( feed[ i ] );
+			feed = trimmedFeed;
+		}
+
+		var uid = arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "";
+		decorateFeedWithUserState( feed, uid );
+
+		var perms = arguments.res.locals.currentUser.permissions;
+		var isAdmin = perms.listFind( "RENEGADE_ADMIN" );
+		var Renderer = new "lib.FeedItemRenderer"();
+		var html = "";
+		for ( var post in feed ) {
+			var isMod = isAdmin || perms.listFind( "FORUM_MODERATOR_" & uCase( post.forum ) );
+			html &= Renderer.renderCard( post, uid, isMod );
+		}
+
+		arguments.res.set( "X-Feed-Has-More", hasMoreAfterThis ? "true" : "false" );
+		arguments.res.send( html );
+	}
+
+	// =========================================================================
+	// Comments
+	// =========================================================================
+
+	function voteCommentAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var comment = new "models.beans.Comment"().getByIdShort( arguments.req.params.id_short );
+		if ( !comment.hasLoaded() ) {
+			fail( arguments.res, "Comment not found", 404 );
+			return;
+		}
+		var voteValue = val( arguments.req.body.value ?: 0 );
+		var uid       = arguments.res.locals.currentUser.id;
+		var Vote      = variables.AppContext.get( "Vote" );
+
+		var result = Vote.toggle( uid, voteValue, "", comment.getId() );
+		if ( result.action == "created" ) {
+			variables.AppContext.get( "AchievementService" ).evaluate( uid );
+			if ( uid != comment.getUsers_id() ) {
+				variables.AppContext.get( "AchievementService" ).evaluate( comment.getUsers_id() );
+			}
+		}
+
+		variables.Broadcast.commentVoteChanged( left( comment.getPosts_id(), 8 ) );
+
+		ok( arguments.res, {
+			score: Vote.getScore( "", comment.getId() ),
+			userVote: Vote.getUserVote( uid, "", comment.getId() )
+		} );
+	}
+
+	function editCommentAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var comment = new "models.beans.Comment"().getByIdShort( arguments.req.params.id_short );
+		if ( !comment.hasLoaded() ) {
+			fail( arguments.res, "Comment not found", 404 );
+			return;
+		}
+		if ( !canManageComment( arguments.res, comment ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var newBody = trim( arguments.req.body.body ?: "" );
+		if ( !len( newBody ) ) {
+			fail( arguments.res, "body is required", 400 );
+			return;
+		}
+		comment.setBody( newBody );
+		comment.save();
+		ok( arguments.res, { bodyHtml: enhanceAnchors( getSafeHTML( markdown( newBody ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) } );
+	}
+
+	function deleteCommentAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var comment = new "models.beans.Comment"().getByIdShort( arguments.req.params.id_short );
+		if ( !comment.hasLoaded() ) {
+			fail( arguments.res, "Comment not found", 404 );
+			return;
+		}
+		if ( !canManageComment( arguments.res, comment ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		comment.setDeleted( 1 );
+		comment.save();
+		ok( arguments.res, { deleted: true } );
+	}
+
+	// =========================================================================
+	// Forums
+	// =========================================================================
+
+	function toggleSubscribeAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		var user = new "models.beans.User"().getById( arguments.res.locals.currentUser.id );
+		var subscribed = user.handleSubscription( forum.getId() );
+		forum.invalidateCache( forum.getId_short() );
+		ok( arguments.res, { subscribed: subscribed } );
+	}
+
+	/**
+	 * No requireAuth() gate — presence counts anonymous visitors too (dedupe by session, not
+	 * identity; see ws/Presence.bx). Not X-Api-Key gated either: this is a same-origin
+	 * fire-and-forget heartbeat from the forum page's own JS, not an admin/integration surface.
+	 */
+	function presencePingAction( req, res ) {
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		var count = variables.Presence.ping( forum.getId_short(), arguments.req.sessionID );
+		ok( arguments.res, { count: count } );
+	}
+
+	/**
+	 * Same "no requireAuth() gate" reasoning as presencePingAction() above — anonymous readers
+	 * count as viewers too. Broadcasts on the post's own `post.{id_short}` STOMP destination, the
+	 * same one the post-detail page already subscribes to for comment/vote broadcasts, so no new
+	 * client-side subscription is needed for this.
+	 */
+	function postPresencePingAction( req, res ) {
+		var post = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !post.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		var count = variables.Presence.pingPost( post.getId_short(), arguments.req.sessionID );
+		ok( arguments.res, { count: count } );
+	}
+
+	function saveForumDetailsAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		if ( !canManageForum( arguments.res, forum ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		forum.setAbout( arguments.req.body.about ?: "" );
+		forum.setIcon( arguments.req.body.icon ?: "" );
+		if ( !forum.save() ) {
+			fail( arguments.res, "Save failed. Please try again." );
+			return;
+		}
+		forum.invalidateCache( forum.getId_short() );
+		ok( arguments.res, { about: forum.getAbout(), icon: forum.getIcon() } );
+	}
+
+	function toggleForumPrivacyAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		if ( !canManageForum( arguments.res, forum ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var newPrivacy = forum.getIs_private() ? 0 : 1;
+		forum.setIs_private( newPrivacy );
+		if ( !forum.save() ) {
+			fail( arguments.res, "Save failed. Please try again." );
+			return;
+		}
+		forum.invalidateCache( forum.getId_short() );
+		ok( arguments.res, { isPrivate: newPrivacy == 1 } );
+	}
+
+	function addForumModeratorAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		if ( !canManageForum( arguments.res, forum ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var uname = trim( arguments.req.body.username ?: "" );
+		if ( !len( uname ) ) {
+			fail( arguments.res, "Enter a username." );
+			return;
+		}
+		var userRows = queryExecute(
+			"SELECT id_short FROM Users WHERE user_name = :username",
+			{ username: { value: uname, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		if ( !userRows.len() ) {
+			fail( arguments.res, "User not found.", 404 );
+			return;
+		}
+		queryExecute(
+			"INSERT IGNORE INTO UsersPermissions (users_id, permissions_id)
+			 SELECT U.id, UUID_TO_BIN(:pid)
+			 FROM Users U WHERE U.user_name = :username",
+			{
+				pid: { value: forum.getPermissions_id(), cfsqltype: "cf_sql_varchar" },
+				username: { value: uname, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		forum.invalidateCache( forum.getId_short() );
+		cache( "dismalCache" ).clear( "user:" & userRows[ 1 ].id_short );
+		ok( arguments.res, { mods: variables.AppContext.get( "Admin" ).getForumModerators( forum.getPermissions_id() ) } );
+	}
+
+	function removeForumModeratorAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		if ( !canManageForum( arguments.res, forum ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var uname   = arguments.req.params.username;
+		var current = variables.AppContext.get( "Admin" ).getForumModerators( forum.getPermissions_id() );
+		if ( current.len() <= 1 ) {
+			fail( arguments.res, "Cannot remove the last moderator. Assign another moderator first." );
+			return;
+		}
+		var userRows = queryExecute(
+			"SELECT id_short FROM Users WHERE user_name = :username",
+			{ username: { value: uname, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		queryExecute(
+			"DELETE UP FROM UsersPermissions UP
+			 JOIN Users U ON U.id = UP.users_id
+			 WHERE U.user_name = :username AND UP.permissions_id = UUID_TO_BIN(:pid)",
+			{
+				username: { value: uname, cfsqltype: "cf_sql_varchar" },
+				pid: { value: forum.getPermissions_id(), cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		forum.invalidateCache( forum.getId_short() );
+		if ( userRows.len() ) cache( "dismalCache" ).clear( "user:" & userRows[ 1 ].id_short );
+		ok( arguments.res, { mods: variables.AppContext.get( "Admin" ).getForumModerators( forum.getPermissions_id() ) } );
+	}
+
+	function addForumMemberAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		if ( !canManageForum( arguments.res, forum ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var uname = trim( arguments.req.body.username ?: "" );
+		if ( !len( uname ) ) {
+			fail( arguments.res, "Enter a username." );
+			return;
+		}
+		var userRows = queryExecute(
+			"SELECT BIN_TO_UUID(id) AS id FROM Users WHERE user_name = :username",
+			{ username: { value: uname, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		if ( !userRows.len() ) {
+			fail( arguments.res, "User not found.", 404 );
+			return;
+		}
+		queryExecute(
+			"INSERT IGNORE INTO UsersForums (users_id, forums_id)
+			 SELECT U.id, UUID_TO_BIN(:forums_id)
+			 FROM Users U WHERE U.user_name = :username",
+			{
+				forums_id: { value: forum.getId(), cfsqltype: "cf_sql_varchar" },
+				username: { value: uname, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		ok( arguments.res, { members: getForumMembers( forum.getId() ) } );
+	}
+
+	function removeForumMemberAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		if ( !canManageForum( arguments.res, forum ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var uname = arguments.req.params.username;
+		queryExecute(
+			"DELETE UF FROM UsersForums UF
+			 JOIN Users U ON U.id = UF.users_id
+			 WHERE U.user_name = :username AND UF.forums_id = UUID_TO_BIN(:forums_id)",
+			{
+				forums_id: { value: forum.getId(), cfsqltype: "cf_sql_varchar" },
+				username: { value: uname, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		ok( arguments.res, { members: getForumMembers( forum.getId() ) } );
+	}
+
+	/**
+	 * Read-only moderator list for a forum, by display name — backs the cross-forum
+	 * "Moderators" tab in the moderator dashboard (views/moderator/mods.bxm), which lets an admin
+	 * pick any forum from a dropdown rather than visiting that forum's own /f/:forum/mod page.
+	 * The add/remove endpoints above already return a fresh `mods` array after mutating; this is
+	 * just the missing "give me the current list" counterpart for the initial selection.
+	 */
+	function getForumModeratorsAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.display );
+		if ( !forum.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		ok( arguments.res, { mods: variables.AppContext.get( "Admin" ).getForumModerators( forum.getPermissions_id() ) } );
+	}
+
+	/**
+	 * Admin-only forum creation — backs the "Create Forum" inline form on the moderator
+	 * dashboard's Forums tab (views/moderator/forums.bxm). Forum::save()'s INSERT path requires
+	 * `setOwner(actingUserId)` called first (a bean has no request-scoped session of its own —
+	 * see Forum.bx's class-level doc comment from Phase 3), and auto-creates the
+	 * `FORUM_MODERATOR_<DISPLAY>` permission + assigns it to the owner as part of that same save().
+	 */
+	function createForumAction( req, res ) {
+		if ( !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var display = trim( arguments.req.body.display ?: "" );
+		var about   = trim( arguments.req.body.about ?: "" );
+		if ( !len( display ) ) {
+			fail( arguments.res, "Forum name is required." );
+			return;
+		}
+		if ( !reFind( "^[a-zA-Z0-9_-]+$", display ) ) {
+			fail( arguments.res, "Forum name can only contain letters, numbers, hyphens, and underscores." );
+			return;
+		}
+		var existing = new "models.beans.Forum"().getByName( display );
+		if ( existing.hasLoaded() ) {
+			fail( arguments.res, "A forum with that name already exists." );
+			return;
+		}
+
+		var forum = new "models.beans.Forum"();
+		forum.setDisplay( display );
+		forum.setAbout( about );
+		forum.setOwner( arguments.res.locals.currentUser.id );
+		if ( !forum.save() ) {
+			fail( arguments.res, "Forum could not be created. Please try again." );
+			return;
+		}
+		cache( "dismalCache" ).clear( "admin:forums" );
+		ok( arguments.res, { display: forum.getDisplay() }, 201 );
+	}
+
+	// =========================================================================
+	// Notifications
+	// =========================================================================
+
+	function recentNotificationsAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		var uid = arguments.res.locals.currentUser.id;
+		ok( arguments.res, {
+			notifications: new "models.beans.Notification"().getRecent( uid ),
+			unreadCount: new "models.beans.Notification"().getUnreadCount( uid )
+		} );
+	}
+
+	function markNotificationsReadAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+		new "models.beans.Notification"().markAllRead( arguments.res.locals.currentUser.id );
+		ok( arguments.res, { success: true } );
+	}
+
+	// =========================================================================
+	// Settings
+	// =========================================================================
+
+	function changePasswordAction( req, res ) {
+		if ( !requireAuth( arguments.req, arguments.res ) ) return;
+
+		var current = arguments.req.body.current_password ?: "";
+		var newPass = arguments.req.body.new_password ?: "";
+
+		if ( !len( current ) || len( newPass ) < 8 ) {
+			fail( arguments.res, "Current password and a new password (8+ characters) are required", 400 );
+			return;
+		}
+
+		var user = new "models.beans.User"().getById( arguments.res.locals.currentUser.id );
+		if ( !user.authenticate( current ) ) {
+			fail( arguments.res, "Current password is incorrect", 400 );
+			return;
+		}
+
+		user.hashPassword( newPass ).save();
+		ok( arguments.res, { success: true } );
+	}
+
+	// =========================================================================
+	// Private helpers
+	// =========================================================================
+
+	private function requireAuth( req, res ) {
+		if ( !arguments.res.locals.isIdentified ) {
+			fail( arguments.res, "Authentication required", 401 );
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * `res.locals.forum` is only set by page routes (AppRouter.bx) — an action route hit
+	 * directly (e.g. POST /posts/:id_short/vote) never goes through those, so the forum has to
+	 * be derived from the post/comment's own `forums_id` instead of assumed to already be on
+	 * res.locals. `forumsId` is a full UUID; Forum::getByIdShort() only needs its first 8 chars.
+	 */
+	private function isForumModerator( res, required string forumsId ) {
+		var perms = arguments.res.locals.currentUser.permissions;
+		if ( perms.listFind( "RENEGADE_ADMIN" ) ) return true;
+		if ( !len( arguments.forumsId ) ) return false;
+		var forum = new "models.beans.Forum"().getByIdShort( left( arguments.forumsId, 8 ) );
+		if ( !forum.hasLoaded() ) return false;
+		return perms.listFind( "FORUM_MODERATOR_" & uCase( forum.getDisplay() ) );
+	}
+
+	private function canManagePost( res, post ) {
+		var uid = arguments.res.locals.currentUser.id;
+		return uid == arguments.post.getUsers_id() || isForumModerator( arguments.res, arguments.post.getForums_id() );
+	}
+
+	private function canManageComment( res, comment ) {
+		var uid = arguments.res.locals.currentUser.id;
+		return uid == arguments.comment.getUsers_id() || isForumModerator( arguments.res, arguments.comment.getForums_id() );
+	}
+
+	private function canManageForum( res, forum ) {
+		var perms = arguments.res.locals.currentUser.permissions;
+		return perms.listFind( "RENEGADE_ADMIN" ) || perms.listFind( "FORUM_MODERATOR_" & uCase( arguments.forum.getDisplay() ) );
+	}
+
+	/**
+	 * Same batch cache-warm as AppRouter.bx's own decorateFeedWithUserState() (see that function's
+	 * doc comment) — one query for the whole page's worth of posts instead of up to 2 per row.
+	 */
+	private function decorateFeedWithUserState( required array feed, required string usersId ) {
+		if ( !len( arguments.usersId ) ) return;
+		new "models.beans.Feed"().warmCache( arguments.feed, arguments.usersId );
+		var Vote = variables.AppContext.get( "Vote" );
+		var Bookmark = new "models.beans.Bookmark"();
+		for ( var row in arguments.feed ) {
+			row[ "user_vote" ] = Vote.getUserVote( arguments.usersId, row.id );
+			row[ "is_bookmarked" ] = Bookmark.isBookmarked( arguments.usersId, row.id );
+		}
+	}
+
+	private function getForumMembers( required string forumsId ) {
+		return queryExecute(
+			"SELECT BIN_TO_UUID(U.id) AS user_id, U.id_short AS user_id_short, U.user_name
+			 FROM UsersForums UF
+			 JOIN Users U ON U.id = UF.users_id
+			 WHERE UF.forums_id = UUID_TO_BIN(:forums_id)
+			 ORDER BY U.user_name",
+			{ forums_id: { value: arguments.forumsId, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+	}
+
+	private function enhanceAnchors( required string html ) {
+		return variables.AppContext.get( "UtilityService" ).enhanceAnchorsInHtml( arguments.html );
+	}
+
+	private function ok( required any res, required any data, numeric statusCode = 200 ) {
+		arguments.res.status( arguments.statusCode ).json( { success: true, data: arguments.data } );
+	}
+
+	private function fail( required any res, required string message, numeric statusCode = 400 ) {
+		arguments.res.status( arguments.statusCode ).json( { success: false, error: arguments.message } );
+	}
+
+}

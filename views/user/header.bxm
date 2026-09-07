@@ -1,0 +1,14 @@
+<bx:output>
+<div class="editor-tabs mb-2">
+	<a href="/u/#encodeForURL(data.userName)#"
+	   class="editor-tab #data.activeTab eq 'posts' ? 'editor-tab--active' : ''#">POSTS</a>
+	<a href="/u/#encodeForURL(data.userName)#/comments"
+	   class="editor-tab #data.activeTab eq 'comments' ? 'editor-tab--active' : ''#">COMMENTS</a>
+	<bx:if data.profileUser.id eq data.currentUser.id>
+		<a href="/u/#encodeForURL(data.userName)#/achievements"
+		   class="editor-tab #data.activeTab eq 'achievements' ? 'editor-tab--active' : ''#">ACHIEVEMENTS</a>
+		<a href="/u/#encodeForURL(data.userName)#/bookmarks"
+		   class="editor-tab #data.activeTab eq 'bookmarks' ? 'editor-tab--active' : ''#">BOOKMARKS</a>
+	</bx:if>
+</div>
+</bx:output>

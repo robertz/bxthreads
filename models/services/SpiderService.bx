@@ -1,0 +1,348 @@
+/**
+ * SpiderService
+ *
+ * Singleton service that fetches rich metadata from external URLs.
+ * Used by the post editor to auto-populate the title field and preview card when a user
+ * pastes a link.
+ *
+ * Extraction strategy (each layer only fills keys not already populated):
+ *  1. OG / Twitter <meta> tags
+ *  2. oEmbed JSON endpoint (discovered via <link type="application/json+oembed">)
+ *  3. JSON-LD <script type="application/ld+json"> (Schema.org structured data)
+ *  4. <meta name="description"> fallback for og:description
+ *  5. <link rel="image_src"> fallback for og:image
+ *  6. <title> tag as last-resort title
+ *  7. <img> tag scan when no og:image was found anywhere above
+ *
+ * Network fetch goes through the real Jsoup class (org.jsoup.Jsoup@bxjsoup — the
+ * module-scoped classloader; a bare createObject("java","org.jsoup.Jsoup") won't
+ * resolve under boxlang-express's isolated module classloaders) exactly as the
+ * source app's javaloader-injected jSoup did. Everything downstream of the fetch
+ * (select/text/attr) then runs through bx-jsoup's htmlParse() BIF against the
+ * fetched document's outerHtml() — bx-jsoup only exposes parse-a-string-in-hand
+ * BIFs, not fetch/connect, so the fetch itself still needs the real Jsoup object.
+ */
+class {
+
+	/**
+	 * Resolves the hostname in a URL and rejects any address that is loopback,
+	 * link-local (169.254.x.x — AWS IMDS, etc.), RFC-1918 private, or any-local.
+	 * Returns false when the URL cannot be parsed or the hostname cannot be resolved.
+	 */
+	private boolean function isSafeSpiderUrl( required string targetUrl ) {
+		var lower = arguments.targetUrl.lCase();
+		if ( lower.left(7) != "http://" && lower.left(8) != "https://" ) return false;
+		try {
+			var uri  = createObject("java", "java.net.URI").init( arguments.targetUrl );
+			var host = uri.getHost();
+			if ( !len( host ) ) return false;
+			var addresses = createObject("java", "java.net.InetAddress").getAllByName( host );
+			for ( var addr in addresses ) {
+				if ( addr.isLoopbackAddress()  ) return false;
+				if ( addr.isLinkLocalAddress() ) return false;
+				if ( addr.isSiteLocalAddress() ) return false;
+				if ( addr.isAnyLocalAddress()  ) return false;
+			}
+			return true;
+		} catch ( any e ) {
+			return false;
+		}
+	}
+
+	/**
+	 * Fetches a URL and extracts Open Graph, Twitter Card, oEmbed, and other
+	 * link-preview metadata using jsoup.
+	 *
+	 * @link The fully-qualified URL to fetch (must include protocol).
+	 * @return Struct of metadata keys. Common keys: og:title, og:description, og:image,
+	 *         twitter:title, twitter:description, oembed:author_name, oembed:provider_name,
+	 *         oembed:html, oembed:type, url, alt_images[]. Empty struct on failure.
+	 */
+	function spider( required string link ){
+		var meta      = {};
+		var cookieMap = {}; // cookies from initial response, carried to retry if needed
+		var jSoup     = createObject( "java", "org.jsoup.Jsoup@bxjsoup" );
+
+		// Rotate through a pool of user-agent strings to reduce bot-blocking.
+		// The Chrome UA is a full browser persona; the others are known social-crawler bots
+		// that many sites whitelist explicitly.
+		var chromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+		var userAgents = [
+			chromeUA,
+			"facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+			"Twitterbot/1.0",
+			"LinkedInBot/1.0 (compatible; Mozilla/5.0; Apache-HttpClient +http://www.linkedin.com)",
+			"Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)"
+		];
+		var chosenUA = userAgents[ randRange( 1, userAgents.len() ) ];
+
+		if ( !isSafeSpiderUrl( arguments.link ) ) return meta;
+
+		// Derive scheme+host for resolving relative og:image URLs later
+		var linkURI    = createObject( "java", "java.net.URI" ).init( arguments.link );
+		var linkOrigin = linkURI.getScheme() & "://" & linkURI.getHost();
+
+		try {
+			// Use execute() so we can inspect the HTTP status before parsing.
+			// maxBodySize(0) removes the default 1 MB cap that can truncate large pages.
+			// validateTLSCertificates(false) handles sites with expired/self-signed SSL certs.
+			var conn = jSoup
+				.connect( link )
+				.timeout( 8000 )
+				.followRedirects( true )
+				.ignoreHttpErrors( true )
+				.ignoreContentType( true )
+				.maxBodySize( 0 )
+				.userAgent( chosenUA )
+				.header( "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8" )
+				.header( "Accept-Language", "en-US,en;q=0.9" )
+				.header( "Cache-Control", "max-age=0" );
+
+			// Browser-navigation headers are only appropriate for the Chrome UA.
+			// Sending Referer / Sec-Fetch-* alongside a bot UA is a fingerprinting red flag.
+			if ( chosenUA == chromeUA ) {
+				conn = conn
+					.header( "Referer", "https://www.google.com/" )
+					.header( "Upgrade-Insecure-Requests", "1" )
+					.header( "Sec-Fetch-Dest", "document" )
+					.header( "Sec-Fetch-Mode", "navigate" )
+					.header( "Sec-Fetch-Site", "cross-site" )
+					.header( "Sec-Fetch-User", "?1" );
+			}
+
+			var response = conn.execute();
+
+			// Capture any cookies set by the server — carry them on the retry if needed.
+			// Some bot-detection systems gate on session cookies established in the first response.
+			cookieMap = response.cookies();
+
+			var statusCode = response.statusCode();
+			if ( statusCode >= 400 ) {
+				// Bad status — log and fall through so retry logic can run
+				new "lib.AppContext"().get( "Logger" ).warn( "SpiderService received HTTP #statusCode# for #arguments.link# — skipping parse" );
+			} else {
+				// Bridge: real Jsoup only did the network fetch above. Everything
+				// downstream (select/text/attr) runs through bx-jsoup's htmlParse()
+				// BIF against the fetched document's outerHtml().
+				var jsDoc = htmlParse( response.parse().outerHtml() );
+
+				// Collect og:* and twitter:* meta tags into a flat struct
+				var el       = jsDoc.select( "meta" );
+				var filtered = el.filter( ( item ) => {
+					var n = item.attr( "name" );
+					var p = item.attr( "property" );
+					return left( n, 8 ) == "twitter:" ||
+						left( n, 3 ) == "og:" ||
+						left( p, 8 ) == "twitter:" ||
+						left( p, 3 ) == "og:";
+				} );
+
+				filtered.each(i => {
+					if(len( i.attr( "name" ) )){
+						meta[ i.attr( "name" ) ] = i.attr( "content" )
+					}
+					else{
+						meta[ i.attr( "property" ) ] = i.attr( "content" );
+					}
+				} );
+
+				meta.append( { "url" : arguments.link, "alt_images" : [] } );
+
+				// Resolve relative og:image URLs to absolute (e.g. "/images/cover.jpg" → "https://example.com/images/cover.jpg")
+				if ( meta.keyExists( "og:image" ) && meta[ "og:image" ].left( 4 ).lCase() != "http" ) {
+					if ( left( meta[ "og:image" ], 1 ) == "/" )
+						meta[ "og:image" ] = linkOrigin & meta[ "og:image" ];
+				}
+
+				// oEmbed enrichment: discover endpoint via <link type="application/json+oembed">
+				var oembedLink = jsDoc.select( "link[type=application/json+oembed]" );
+				if ( !oembedLink.isEmpty() ) {
+					try {
+						var oembedUrl  = oembedLink.first().attr( "href" );
+						if ( !isSafeSpiderUrl( oembedUrl ) ) throw( type="SpiderService.UnsafeUrl", message="oEmbed URL rejected: #oembedUrl#" );
+						var oembedJson = jSoup
+							.connect( oembedUrl )
+							.timeout( 5000 )
+							.ignoreContentType( true )
+							.ignoreHttpErrors( true )
+							.execute()
+							.body();
+						var oembedData = deserializeJSON( oembedJson );
+
+						if ( isStruct( oembedData ) ) {
+							if ( !meta.keyExists( "og:title" ) && !meta.keyExists( "twitter:title" ) && oembedData.keyExists( "title" ) )
+								meta[ "og:title" ] = oembedData.title;
+							if ( !meta.keyExists( "og:image" ) && oembedData.keyExists( "thumbnail_url" ) )
+								meta[ "og:image" ] = oembedData.thumbnail_url;
+							if ( !meta.keyExists( "og:description" ) && oembedData.keyExists( "description" ) )
+								meta[ "og:description" ] = oembedData.description;
+							if ( oembedData.keyExists( "author_name" ) )   meta[ "oembed:author_name" ]   = oembedData.author_name;
+							if ( oembedData.keyExists( "provider_name" ) ) meta[ "oembed:provider_name" ] = oembedData.provider_name;
+							if ( oembedData.keyExists( "html" ) )          meta[ "oembed:html" ]           = oembedData.html;
+							if ( oembedData.keyExists( "type" ) )          meta[ "oembed:type" ]           = oembedData.type;
+						}
+					} catch ( any e ) {
+						new "lib.AppContext"().get( "Logger" ).warn( "SpiderService oEmbed fetch failed for #arguments.link#: #e.message#" );
+					}
+				}
+
+				// JSON-LD enrichment: parse first <script type="application/ld+json">
+				var jsonLdScripts = jsDoc.select( "script[type=application/ld+json]" );
+				if ( !jsonLdScripts.isEmpty() ) {
+					try {
+						var jsonLdData = deserializeJSON( jsonLdScripts.first().html() );
+
+						// Normalise: unwrap array or @graph
+						var schema = isArray( jsonLdData ) ? jsonLdData[ 1 ] : jsonLdData;
+						if ( isStruct( schema ) && schema.keyExists( "@graph" ) && isArray( schema[ "@graph" ] ) )
+							schema = schema[ "@graph" ][ 1 ];
+
+						if ( isStruct( schema ) ) {
+							if ( !meta.keyExists( "og:title" ) && !meta.keyExists( "twitter:title" ) ) {
+								if ( schema.keyExists( "headline" ) )       meta[ "og:title" ] = schema.headline;
+								else if ( schema.keyExists( "name" ) )      meta[ "og:title" ] = schema.name;
+							}
+							if ( !meta.keyExists( "og:description" ) && schema.keyExists( "description" ) )
+								meta[ "og:description" ] = schema.description;
+							if ( !meta.keyExists( "og:image" ) && schema.keyExists( "image" ) ) {
+								var schemaImg = schema.image;
+								if ( isStruct( schemaImg ) && schemaImg.keyExists( "url" ) )
+									meta[ "og:image" ] = schemaImg.url;
+								else if ( isSimpleValue( schemaImg ) )
+									meta[ "og:image" ] = schemaImg;
+							}
+						}
+					} catch ( any e ) {
+						new "lib.AppContext"().get( "Logger" ).warn( "SpiderService JSON-LD parse failed for #arguments.link#: #e.message#" );
+					}
+				}
+
+				// Standard <meta name="description"> fallback for og:description
+				if ( !meta.keyExists( "og:description" ) ) {
+					var descTag = jsDoc.select( "meta[name=description]" );
+					if ( !descTag.isEmpty() ) {
+						var descContent = descTag.first().attr( "content" );
+						if ( len( trim( descContent ) ) ) meta[ "og:description" ] = descContent;
+					}
+				}
+
+				// <link rel="image_src"> fallback for og:image (used by some older/news sites)
+				if ( !meta.keyExists( "og:image" ) ) {
+					var imgSrcLink = jsDoc.select( "link[rel=image_src]" );
+					if ( !imgSrcLink.isEmpty() ) {
+						var imgSrcHref = imgSrcLink.first().attr( "abs:href" );
+						if ( len( imgSrcHref ) ) meta[ "og:image" ] = imgSrcHref;
+					}
+				}
+
+				// <title> fallback when no title was found by any strategy above
+				if ( !meta.keyExists( "og:title" ) && !meta.keyExists( "twitter:title" ) ) {
+					var pageTitle = jsDoc.title();
+					if ( len( trim( pageTitle ) ) ) meta[ "og:title" ] = pageTitle;
+				}
+
+				// Fallback: scrape <img> tags when no og:image meta tag was found.
+				// Checks src (via absUrl), plus data-src / data-lazy-src / data-original
+				// for lazy-loaded images, and the legacy data-img-url attribute.
+				if ( !meta.keyExists( "og:image" ) ) {
+					el = jsDoc.select( "img" );
+
+					el.each( function( item ){
+						var imgSrc = item.absUrl( "src" );
+
+						// Fall back through lazy-load attributes when src is empty
+						if ( !len( imgSrc ) ) imgSrc = item.absUrl( "data-src" );
+						if ( !len( imgSrc ) ) imgSrc = item.absUrl( "data-lazy-src" );
+						if ( !len( imgSrc ) ) imgSrc = item.absUrl( "data-original" );
+
+						if ( len( imgSrc ) ) {
+							if (
+								imgSrc.findNoCase( ".jpg" ) || imgSrc.findNoCase( ".jpeg" ) ||
+								imgSrc.findNoCase( ".gif" ) || imgSrc.findNoCase( ".png" ) ||
+								imgSrc.findNoCase( ".webp" )
+							) {
+								meta.alt_images.append( imgSrc );
+							}
+						} else if ( item.attributes().hasKey( "data-img-url" ) ) {
+							var dataImgUrl = item.attr( "data-img-url" );
+							if (
+								dataImgUrl.findNoCase( ".jpg" ) || dataImgUrl.findNoCase( ".jpeg" ) ||
+								dataImgUrl.findNoCase( ".gif" ) || dataImgUrl.findNoCase( ".png" ) ||
+								dataImgUrl.findNoCase( ".webp" )
+							) {
+								meta.alt_images.append( dataImgUrl );
+							}
+						}
+					} );
+				}
+			} // end else (status < 400)
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).warn( "SpiderService failed to fetch metadata for #arguments.link# [#e.type#]: #e.message# — #e.detail#" );
+		}
+
+		// Retry on total failure: bad HTTP status or caught exception both leave meta empty.
+		// Use facebookexternalhit UA with a longer timeout and minimal og: extraction only.
+		// Pass any cookies from the initial response — bot-detection systems often require them.
+		if ( meta.isEmpty() ) {
+			try {
+				var retryConn = jSoup
+					.connect( link )
+					.timeout( 10000 )
+					.followRedirects( true )
+					.ignoreHttpErrors( true )
+					.ignoreContentType( true )
+					.maxBodySize( 0 )
+					.userAgent( "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)" );
+
+				if ( !cookieMap.isEmpty() ) retryConn = retryConn.cookies( cookieMap );
+
+				var retryResponse = retryConn.execute();
+
+				if ( retryResponse.statusCode() < 400 ) {
+					var retryDoc = htmlParse( retryResponse.parse().outerHtml() );
+					retryDoc.select( "meta" ).filter( ( item ) => {
+						var p = item.attr( "property" );
+						var n = item.attr( "name" );
+						return left( p, 3 ) == "og:" || left( n, 3 ) == "og:";
+					} ).each( ( i ) => {
+						if ( len( i.attr( "name" ) ) )
+							meta[ i.attr( "name" ) ] = i.attr( "content" );
+						else
+							meta[ i.attr( "property" ) ] = i.attr( "content" );
+					} );
+					if ( !meta.isEmpty() ) meta[ "url" ] = arguments.link;
+				}
+			} catch ( any e ) {
+				new "lib.AppContext"().get( "Logger" ).warn( "SpiderService retry failed for #arguments.link# [#e.type#]: #e.message# — #e.detail#" );
+			}
+		}
+
+		return meta;
+	}
+
+	/**
+	 * Strips all HTML tags from an HTML string and returns plain-text paragraphs.
+	 *
+	 * Parses the HTML with jsoup, selects all <p> elements, and rebuilds them as
+	 * plain-text <p> tags (no attributes or child HTML). Useful for generating safe
+	 * text previews from raw HTML content.
+	 *
+	 * @html The raw HTML string to process.
+	 * @return A concatenated string of plain-text <p>…</p> blocks with no wrapper element.
+	 */
+	function extract_text( required string html ){
+		// Already-in-hand HTML string — goes straight through bx-jsoup's htmlParse()
+		// BIF, no fetch involved, so no real-Jsoup bridging is needed here.
+		var jsDoc = htmlParse( arguments.html );
+		var ps    = jsDoc.select( "p" );
+
+		var t = [];
+		ps.each( function( el ){
+			t.append( "<p>" & el.text() & "</p>" );
+		} )
+
+		var res = arrayToList( t, "" );
+		return res;
+	}
+
+}

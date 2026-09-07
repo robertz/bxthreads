@@ -1,0 +1,138 @@
+/**
+ * bxThreads entry point.
+ * Start with: boxlang --bx-config ./boxlang.json app.bxs
+ *
+ * Phase 1 (foundation) only: DI registry, session/identity bootstrap, security headers, error
+ * handling. Routing (Phase 3), the REST API (Phase 4), the interactive rewrite (Phase 5), and
+ * the realtime layer (Phase 6) land in later phases — see .claude/plans/typed-seeking-frog.md.
+ */
+
+app = boxExpress()
+
+Config     = new "lib.Config"()
+AppContext = new "lib.AppContext"()
+Session    = new "lib.Session"()
+
+AppContext.register( "Config", Config )
+AppContext.register( "Logger", new "lib.Logger"() )
+AppContext.register( "Populate", new "lib.Populate"() )
+AppContext.register( "Sql", new "lib.Sql"() )
+AppContext.register( "Session", Session )
+AppContext.register( "View", new "lib.View"() )
+AppContext.register( "RequestContext", new "lib.RequestContext"() )
+AppContext.register( "JsonAction", new "lib.JsonAction"() )
+
+AppContext.scanDirectory( expandPath( "./models/beans" ), "models.beans" )
+AppContext.scanDirectory( expandPath( "./models/dao" ), "models.dao" )
+AppContext.scanDirectory( expandPath( "./models/services" ), "models.services" )
+
+app.set( "env", Config.getEnv() )
+app.set( "reloadOnChange", Config.getEnv() == "development" )
+app.set( "views", expandPath( "./views" ) )
+
+// Body parsers — login/signup are plain HTML form POSTs (urlencoded); JSON is for Phase 4's API.
+app.use( boxExpressUrlencoded() )
+app.use( boxExpressJSON() )
+
+// No esbuild output in this project yet — every view falls back to its unhashed /assets/...
+// path. Revisit once a real build step exists (see lib/RequestContext.bx's own note).
+app.locals.assets = {}
+
+/**
+ * Security headers — direct port of handlers/Main.bx::onRequestStart(). Kept as one explicit
+ * middleware (not boxExpressHelmet()'s generic defaults) so the CSP allowlist stays byte-for-byte
+ * what the layout's asset includes (Prism/cdnjs, YouTube embeds, GoatCounter) actually need —
+ * see layouts/Main.bxm in the source app for why each origin is there.
+ */
+app.use( ( req, res, next ) => {
+	res.set( "Content-Security-Policy",
+		"default-src 'self'; " &
+		"script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com https://www.youtube.com; " &
+		"script-src-elem 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com https://www.youtube.com; " &
+		"style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; " &
+		"img-src 'self' data: https://www.youtube.com https:; " &
+		"font-src 'self' https://cdn.jsdelivr.net data:; " &
+		"frame-src 'self' https://www.youtube.com https://player.vimeo.com https://clips.twitch.tv; " &
+		"connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; " &
+		"object-src 'none'; " &
+		"base-uri 'self'; " &
+		"form-action 'self';"
+	)
+	res.set( "X-Content-Type-Options", "nosniff" )
+	res.set( "X-Frame-Options", "DENY" )
+	res.set( "X-XSS-Protection", "1; mode=block" )
+	next()
+} )
+
+/**
+ * Sessions — replaces the ColdBox client-scope `client.uid` cookie. 30-day maxAge matches the
+ * source app's `this.clientTimeout = createTimespan(30,0,0,0)` in Application.bx.
+ *
+ * Instantiated directly (not via the boxExpressSession() BIF) so ws/Stomp.bx can read the same
+ * in-memory session store by session id — app.ws() routes sit outside the app.use() middleware
+ * chain entirely, so a WebSocket upgrade never runs Session middleware itself; STOMP CONNECT has
+ * to look the cookie up against this exact store instance to identify the connecting user.
+ */
+sessionMiddleware = new "bxModules.boxexpress.models.middleware.Session"()
+app.use( sessionMiddleware.session( { name: "dt_sid", maxAge: 60 * 60 * 24 * 30 } ) )
+
+/**
+ * Realtime layer (Phase 6) — one shared STOMP broker for comment/vote/notification broadcasts
+ * (ws/Broadcast.bx) and forum presence (ws/Presence.bx). See ws/Stomp.bx for the
+ * authenticate()/authorize() identity model.
+ */
+stomp = new "ws.Stomp"( sessionMiddleware ).build()
+app.ws( "/stomp", stomp.handler() )
+AppContext.register( "Stomp", stomp )
+AppContext.register( "Broadcast", new "ws.Broadcast"( stomp ) )
+AppContext.register( "Presence", new "ws.Presence"( stomp ) )
+
+// Mounted before RequestContext's page-bootstrap middleware below — every /api/* route handler
+// sends its own response directly (no next()), so a matching request never reaches that
+// middleware or the page router at all. API auth is the X-Api-Key header, not the session.
+apiRouter = boxExpressRouter()
+new "routes.ApiRouter"().register( app, apiRouter )
+app.use( "/api", apiRouter )
+
+// Replaces RequestService.bx::setup_request() + AppRouter.bx::preHandler()'s social-meta
+// defaults — runs on every remaining (page) request, populating res.locals for the layout
+// and views. Never reached by /api/* — see above.
+RequestContext = AppContext.get( "RequestContext" )
+app.use( ( req, res, next ) => {
+	RequestContext.bootstrap( app, req, res )
+	next()
+} )
+
+// Mounted at root, not "/public" — the source app's views reference root-relative paths
+// (/assets/css/site.css, /favicon.svg) matching its own webroot layout; public/ here just
+// holds those same files instead of the whole webroot.
+app.use( boxExpressStatic( expandPath( "./public" ) ) )
+
+actionsRouter = boxExpressRouter()
+new "routes.ActionsRouter"().register( app, actionsRouter )
+app.use( "/", actionsRouter )
+
+pageRouter = boxExpressRouter()
+new "routes.AppRouter"().register( app, pageRouter )
+app.use( "/", pageRouter )
+
+/**
+ * Error handling — mirrors handlers/Main.bx::onException (generic message + 500, real detail
+ * only in dev). boxExpress's own default error handling already does this too; this override
+ * exists so the response shape/logging matches the source app deliberately rather than by
+ * coincidence. Phase 3 should replace the JSON body with a rendered views/main/missing.bxm once
+ * that view exists.
+ */
+app.use( ( err, req, res, next ) => {
+	AppContext.get( "Logger" ).error( err.message )
+	res.status( 500 )
+	if ( Config.getEnv() == "development" ) {
+		res.json( { error: true, message: err.message } )
+	} else {
+		res.json( { error: true, message: "Internal Server Error" } )
+	}
+} )
+
+app.listen( toNumeric( Config.getPort() ), ( port ) => {
+	println( "bxThreads listening on http://localhost:#port#" )
+} )

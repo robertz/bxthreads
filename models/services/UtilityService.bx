@@ -1,0 +1,218 @@
+/**
+ * UtilityService
+ *
+ * Singleton service providing text and HTML utility functions used across the application.
+ *
+ *  - normalizeText()        — applies NFC Unicode normalisation to a string.
+ *  - extractJsoupText()     — convenience wrapper for jsoup node text extraction.
+ *  - enhanceAnchorsInHtml() — rewrites <a> tags in rendered HTML to be safe for display.
+ */
+class {
+
+	/**
+	 * Applies NFC Unicode normalisation to a string.
+	 *
+	 * Uses java.text.Normalizer with NFC form to compose any decomposed Unicode
+	 * sequences into their canonical precomposed forms (e.g. e + combining accent → é).
+	 *
+	 * Used to normalise scraped og:title values before storing or displaying them,
+	 * ensuring consistent Unicode representation across the application.
+	 *
+	 * @text The input string to normalise. Returns "" if empty.
+	 * @return NFC-normalised string.
+	 */
+    string function normalizeText( required string text ) {
+        if ( !len( arguments.text ) ) return "";
+
+        // 1) Strip diacritics via java.text.Normalizer
+        var Normalizer     = createObject( "java", "java.text.Normalizer" );
+        var NormalizerForm = createObject( "java", "java.text.Normalizer$Form" );
+        var normalized     = Normalizer.normalize( arguments.text, NormalizerForm.NFC );
+
+		return normalized;
+    }
+
+	/**
+	 * Extracts plain text from a jsoup Element or Document and normalises it.
+	 *
+	 * Calls jsoup's text() method on the node (which strips all HTML tags and decodes
+	 * HTML entities), then passes the result through normalizeText() for consistent
+	 * Unicode representation.
+	 *
+	 * @node A jsoup Element or Document object. Must expose a text() method or text property.
+	 * @return NFC-normalised plain-text string extracted from the node.
+	 */
+    string function extractJsoupText( required any node ) {
+        var txt = node.text ?: ( isCustomFunction( node.text ) ? node.text() : "" );
+        return normalizeText( txt );
+    }
+
+	/**
+	 * Rewrites all <a> tags in an HTML string to be safe for user-facing display.
+	 *
+	 * Adds the following to every opening <a> tag found in the input:
+	 *  - class="post-link"              (appended to any existing class value)
+	 *  - rel="noopener nofollow ugc"    (each token appended if not already present)
+	 *  - target="_blank"                (set or overwritten to always be _blank)
+	 *
+	 * Uses a manual regex scan-and-replace loop rather than a full HTML parser so that
+	 * the surrounding HTML structure is preserved exactly. Delegates per-tag mutation to
+	 * enhanceSingleAnchorTag().
+	 *
+	 * Called when rendering post and comment bodies to ensure all user-submitted links
+	 * open in a new tab and carry the appropriate security and SEO rel attributes.
+	 *
+	 * @html The HTML string to process (e.g. output of getSafeHTML(markdown(body))).
+	 * @return The input HTML with all <a> tags enhanced. Non-anchor content is unchanged.
+	 */
+	string function enhanceAnchorsInHtml( required string html ) {
+		var s       = arguments.html;
+		var pattern = '<a\b[^>]*>';
+		var startAt = 1;
+		var out     = "";
+
+		while ( true ) {
+			var m = reFindNoCase( pattern, s, startAt, true );
+
+			if ( !isStruct(m) || !arrayLen(m.pos) || m.pos[1] == 0 ) {
+				out &= mid( s, startAt );
+				break;
+			}
+
+			out &= mid( s, startAt, m.pos[1] - startAt );
+			var tag = mid( s, m.pos[1], m.len[1] );
+			out &= enhanceSingleAnchorTag( tag );
+			startAt = m.pos[1] + m.len[1];
+		}
+
+		return out;
+	}
+
+	// ── Private helpers ───────────────────────────────────────────────────
+
+	/**
+	 * Applies all attribute enhancements to a single <a ...> tag string.
+	 * Delegates each attribute mutation to ensureTokenAttribute() or ensureValueAttribute().
+	 *
+	 * @tag A single opening <a ...> tag string (no closing </a>).
+	 * @return The enhanced tag string.
+	 */
+	private string function enhanceSingleAnchorTag( required string tag ) {
+		var t = arguments.tag;
+		t = rewriteExternalHref( t );
+		t = ensureTokenAttribute( t, "class",  "post-link" );
+		t = ensureTokenAttribute( t, "rel",    "noopener" );
+		t = ensureTokenAttribute( t, "rel",    "nofollow" );
+		t = ensureTokenAttribute( t, "rel",    "ugc" );
+		t = ensureValueAttribute( t, "target", "_blank", true );
+		return t;
+	}
+
+	/**
+	 * Rewrites an external href attribute to route through the /go/:link interstitial.
+	 *
+	 * If the href value starts with http:// or https://, the value is base64-encoded
+	 * and the href is replaced with /go/<encoded>. Internal and anchor hrefs are left
+	 * unchanged.
+	 *
+	 * @tag A single opening <a ...> tag string.
+	 * @return The tag with the href rewritten if applicable.
+	 */
+	private string function rewriteExternalHref( required string tag ) {
+		var t         = arguments.tag;
+		var attrRegex = '\bhref\s*=\s*"([^"]*)"';
+		var m         = reFindNoCase( attrRegex, t, 1, true );
+
+		if ( !isStruct(m) || !arrayLen(m.pos) || m.pos[1] == 0 || arrayLen(m.pos) < 2 ) {
+			return t;
+		}
+
+		var valPos = m.pos[2];
+		var valLen = m.len[2];
+		var href   = mid( t, valPos, valLen );
+
+		if ( !href.startsWith( "http://" ) && !href.startsWith( "https://" ) ) {
+			return t;
+		}
+
+		var newHref = "/go/" & toBase64( href );
+		return left( t, valPos - 1 ) & newHref & mid( t, valPos + valLen );
+	}
+
+	/**
+	 * Ensures a space-delimited attribute contains a specific token.
+	 *
+	 * If the attribute already exists on the tag, the token is appended to its value
+	 * (if not already present). If the attribute does not exist, it is injected
+	 * immediately after the opening "<a" with the token as its sole value.
+	 *
+	 * Designed for multi-token attributes like class and rel.
+	 *
+	 * @tag   The <a ...> tag string to modify.
+	 * @attr  The attribute name (e.g. "class", "rel").
+	 * @token The token to ensure is present in the attribute value (e.g. "nofollow").
+	 * @return The modified tag string.
+	 */
+	private string function ensureTokenAttribute(
+		required string tag,
+		required string attr,
+		required string token
+	) {
+		var t         = arguments.tag;
+		var attrRegex = '\b' & arguments.attr & '\s*=\s*"([^"]*)"';
+		var m         = reFindNoCase( attrRegex, t, 1, true );
+
+		if ( isStruct(m) && arrayLen(m.pos) && m.pos[1] > 0 ) {
+			var valPos     = m.pos[2];
+			var valLen     = m.len[2];
+			var currentVal = mid( t, valPos, valLen );
+			if ( !listFindNoCase( currentVal, arguments.token, " " ) ) {
+				var newVal = trim( currentVal & " " & arguments.token );
+				t = left( t, valPos - 1 ) & newVal & mid( t, valPos + valLen );
+			}
+		} else {
+			t = reReplaceNoCase( t, '^<a\b', '<a ' & arguments.attr & '="' & arguments.token & '"', "one" );
+		}
+
+		return t;
+	}
+
+	/**
+	 * Ensures a single-value attribute is present on the tag with the specified value.
+	 *
+	 * If the attribute already exists and normalize is true, its current value is
+	 * overwritten with the supplied value. If the attribute does not exist, it is
+	 * injected immediately after "<a".
+	 *
+	 * Designed for single-value attributes like target where only one value is valid.
+	 *
+	 * @tag       The <a ...> tag string to modify.
+	 * @attr      The attribute name (e.g. "target").
+	 * @value     The required attribute value (e.g. "_blank").
+	 * @normalize If true, overwrite an existing value; if false, leave existing values intact.
+	 * @return The modified tag string.
+	 */
+	private string function ensureValueAttribute(
+		required string tag,
+		required string attr,
+		required string value,
+		boolean normalize = false
+	) {
+		var t         = arguments.tag;
+		var attrRegex = '\b' & arguments.attr & '\s*=\s*"([^"]*)"';
+		var m         = reFindNoCase( attrRegex, t, 1, true );
+
+		if ( isStruct(m) && arrayLen(m.pos) && m.pos[1] > 0 ) {
+			if ( arguments.normalize ) {
+				var valPos = m.pos[2];
+				var valLen = m.len[2];
+				t = left( t, valPos - 1 ) & arguments.value & mid( t, valPos + valLen );
+			}
+		} else {
+			t = reReplaceNoCase( t, '^<a\b', '<a ' & arguments.attr & '="' & arguments.value & '"', "one" );
+		}
+
+		return t;
+	}
+
+}

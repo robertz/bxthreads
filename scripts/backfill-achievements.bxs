@@ -1,0 +1,56 @@
+/**
+ * Standalone CLI backfill — re-evaluates achievement criteria for every user in the database.
+ * Useful after adding a new achievement track or correcting bad data; not part of normal request
+ * flow (AchievementService::evaluate() already runs inline on post/comment/vote and page loads —
+ * see lib/RequestContext.bx, models/beans/Post.bx, models/beans/Comment.bx, routes/ActionsRouter.bx).
+ *
+ * Run with:
+ *   boxlang --bx-config ./boxlang.json scripts/backfill-achievements.bxs
+ *
+ * No ColdBox/servlet lifecycle involved (boxlang-express has none to hook into, and this script
+ * doesn't boot app.bxs's HTTP server at all) — same standalone-.bxs pattern as tests/runner.bxs.
+ * AppContext only needs "Logger" registered: AchievementService::evaluate() reads it on its own
+ * error-catch path, and awardTier()'s writes go through queryExecute() against boxlang.json's
+ * defaultDatasource, no other AppContext dependency required.
+ */
+appCtx = new "lib.AppContext"();
+if ( !appCtx.has( "Logger" ) ) {
+	appCtx.register( "Logger", new "lib.Logger"() );
+}
+
+achievementService = new "models.services.AchievementService"();
+
+users = queryExecute(
+	"SELECT BIN_TO_UUID(id) AS id FROM Users",
+	{},
+	{ returnType: "array" }
+);
+
+println( "Backfilling achievements for " & users.len() & " user(s)..." );
+
+evaluated = 0;
+failed    = 0;
+
+for ( user in users ) {
+	try {
+		// evaluate() throttles to once per 300s per user via a dismalCache key — clear it first
+		// so a deliberate backfill run actually re-evaluates every user, not just ones that
+		// haven't been evaluated recently.
+		userShort = left( user.id, 8 );
+		cache( "dismalCache" ).clear( "ach:eval:#userShort#" );
+
+		achievementService.evaluate( user.id );
+		evaluated++;
+	} catch ( any e ) {
+		failed++;
+		println( "  FAILED for user " & user.id & ": " & e.message );
+	}
+}
+
+println( "Done: " & evaluated & " evaluated, " & failed & " failed." );
+
+if ( failed > 0 ) {
+	// BoxLang CLI has no systemExit()/exit-code BIF — an uncaught exception is the only way to
+	// make the process exit non-zero, matching tests/runner.bxs's convention.
+	throw( message = "Achievement backfill completed with " & failed & " failure(s)" );
+}

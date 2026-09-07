@@ -1,0 +1,20 @@
+<bx:output>
+<div class="container mb-5">
+
+	<div class="row">
+		<div class="col-12 col-lg-6 offset-lg-3 p-2">
+
+			<div class="card" style="border-radius: 4px; border: 1px solid var(--ui-border-subtle); background-color: var(--ui-surface-1);">
+				<div class="card-body text-center py-5">
+					<div class="fw-bold h1" style="color: var(--text-secondary);">Not found</div>
+					<div class="fw-bold h5 mb-1" style="color: var(--post-anchor);">This page doesn't exist.</div>
+					<p class="mb-4" style="font-size: 0.9rem; color: var(--text-muted);">Whatever you were looking for has either moved or was never here.</p>
+					<a href="/" class="login-btn--secondary" style="display: inline-block; padding: 8px 24px; border-radius: 999px; font-size: 0.85rem; font-weight: 600; text-decoration: none;">Go Home</a>
+				</div>
+			</div>
+
+		</div>
+	</div>
+
+</div>
+</bx:output>

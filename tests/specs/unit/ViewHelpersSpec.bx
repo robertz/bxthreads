@@ -1,0 +1,193 @@
+/**
+ * Unit tests for lib/ViewHelpers.bxm's pure helper functions — included the same way
+ * lib/View.bx::renderToString() includes them into a render scope, so these tests exercise
+ * the exact same code path production views use, not a reimplementation.
+ */
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "ViewHelpers", function() {
+
+			beforeEach( function() {
+				include "/lib/ViewHelpers.bxm";
+			} );
+
+			describe( "slugifyText()", function() {
+				it( "lowercases and hyphenates a plain title", function() {
+					expect( slugifyText( "A Really Long Title" ) ).toBe( "a-really-long-title" );
+				} );
+
+				it( "collapses repeated whitespace before hyphenating", function() {
+					expect( slugifyText( "too    many     spaces" ) ).toBe( "too-many-spaces" );
+				} );
+
+				it( "truncates to maxLength when given", function() {
+					expect( slugifyText( "a really long title that keeps going", 10 ) ).toBe( "a-really-l" );
+				} );
+
+				it( "does not leave a double or trailing hyphen around stripped punctuation", function() {
+					expect( slugifyText( "Hello World, This Is A Post!" ) ).toBe( "hello-world-this-is-a-post" );
+				} );
+
+				it( "transliterates German umlauts/eszett instead of just stripping them", function() {
+					expect( slugifyText( "Über groß" ) ).toBe( "ueber-gross" );
+				} );
+			} );
+
+			describe( "getBaseDomain()", function() {
+				it( "extracts the registrable domain from a plain URL", function() {
+					expect( getBaseDomain( "https://www.example.com/some/path" ) ).toBe( "example.com" );
+				} );
+
+				it( "handles a URL with no scheme", function() {
+					expect( getBaseDomain( "news.ycombinator.com/item?id=1" ) ).toBe( "ycombinator.com" );
+				} );
+
+				it( "handles known multi-part TLDs like co.uk", function() {
+					expect( getBaseDomain( "https://www.bbc.co.uk/news" ) ).toBe( "bbc.co.uk" );
+				} );
+
+				it( "returns empty string for an empty input", function() {
+					expect( getBaseDomain( "" ) ).toBe( "" );
+				} );
+			} );
+
+			describe( "youtubeId()", function() {
+				it( "extracts the id from a standard watch URL", function() {
+					expect( youtubeId( "https://www.youtube.com/watch?v=dQw4w9WgXcQ" ) ).toBe( "dQw4w9WgXcQ" );
+				} );
+
+				it( "extracts the id from a watch URL with extra query params", function() {
+					expect( youtubeId( "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30s" ) ).toBe( "dQw4w9WgXcQ" );
+				} );
+
+				it( "extracts the id from a shorts URL", function() {
+					expect( youtubeId( "https://www.youtube.com/shorts/abc12345678" ) ).toBe( "abc12345678" );
+				} );
+
+				it( "extracts the id from a youtu.be short link", function() {
+					expect( youtubeId( "https://youtu.be/abc12345678" ) ).toBe( "abc12345678" );
+				} );
+
+				it( "extracts the id from an embed URL", function() {
+					expect( youtubeId( "https://www.youtube.com/embed/abc12345678" ) ).toBe( "abc12345678" );
+				} );
+
+				it( "extracts the id from a live URL", function() {
+					expect( youtubeId( "https://www.youtube.com/live/abc12345678" ) ).toBe( "abc12345678" );
+				} );
+
+				it( "extracts the id from a mobile (m.youtube.com) watch URL", function() {
+					expect( youtubeId( "https://m.youtube.com/watch?v=abc12345678" ) ).toBe( "abc12345678" );
+				} );
+
+				it( "extracts the id when v= isn't the first query param", function() {
+					expect( youtubeId( "https://www.youtube.com/watch?list=PL123&v=abc12345678" ) ).toBe( "abc12345678" );
+				} );
+
+				it( "extracts the id from a youtube-nocookie.com embed URL", function() {
+					expect( youtubeId( "https://www.youtube-nocookie.com/embed/abc12345678" ) ).toBe( "abc12345678" );
+				} );
+
+				it( "returns empty string for a non-YouTube URL", function() {
+					expect( youtubeId( "https://example.com/video/123" ) ).toBe( "" );
+				} );
+
+				it( "returns empty string for an empty input", function() {
+					expect( youtubeId( "" ) ).toBe( "" );
+				} );
+			} );
+
+			describe( "vimeoId()", function() {
+				it( "extracts the id from a bare share-link URL", function() {
+					expect( vimeoId( "https://vimeo.com/76979871" ) ).toBe( "76979871" );
+				} );
+
+				it( "extracts the id from a player.vimeo.com embed URL", function() {
+					expect( vimeoId( "https://player.vimeo.com/video/76979871" ) ).toBe( "76979871" );
+				} );
+
+				it( "extracts the id from a channels URL", function() {
+					expect( vimeoId( "https://vimeo.com/channels/staffpicks/76979871" ) ).toBe( "76979871" );
+				} );
+
+				it( "extracts the id from a groups URL", function() {
+					expect( vimeoId( "https://vimeo.com/groups/name/videos/76979871" ) ).toBe( "76979871" );
+				} );
+
+				it( "extracts the id and private hash from an unlisted video URL", function() {
+					expect( vimeoId( "https://vimeo.com/76979871/abcdef1234" ) ).toBe( "76979871/abcdef1234" );
+				} );
+
+				it( "returns empty string for a non-Vimeo URL", function() {
+					expect( vimeoId( "https://example.com/video/123" ) ).toBe( "" );
+				} );
+
+				it( "returns empty string for an empty input", function() {
+					expect( vimeoId( "" ) ).toBe( "" );
+				} );
+			} );
+
+			describe( "twitchClipSlug()", function() {
+				it( "extracts the slug from a clips.twitch.tv URL", function() {
+					expect( twitchClipSlug( "https://clips.twitch.tv/AmazingCaringOwlKappa" ) ).toBe( "AmazingCaringOwlKappa" );
+				} );
+
+				it( "extracts the slug from a twitch.tv/CHANNEL/clip/ URL", function() {
+					expect( twitchClipSlug( "https://www.twitch.tv/somechannel/clip/AmazingCaringOwlKappa" ) ).toBe( "AmazingCaringOwlKappa" );
+				} );
+
+				it( "extracts the slug ignoring a trailing query string", function() {
+					expect( twitchClipSlug( "https://clips.twitch.tv/AmazingCaringOwlKappa?filter=clips" ) ).toBe( "AmazingCaringOwlKappa" );
+				} );
+
+				it( "returns empty string for a non-Twitch URL", function() {
+					expect( twitchClipSlug( "https://example.com/video/123" ) ).toBe( "" );
+				} );
+
+				it( "returns empty string for an empty input", function() {
+					expect( twitchClipSlug( "" ) ).toBe( "" );
+				} );
+			} );
+
+			describe( "momentFrom()", function() {
+				it( "renders a just-now phrase for a timestamp seconds ago", function() {
+					var ref = now();
+					var target = dateAdd( "s", -10, ref );
+					expect( momentFrom( target, ref ) ).toBe( "just now" );
+				} );
+
+				it( "renders a past minutes phrase", function() {
+					var ref = now();
+					var target = dateAdd( "n", -5, ref );
+					expect( momentFrom( target, ref ) ).toBe( "5m" );
+				} );
+
+				it( "renders a future phrase with the 'in' prefix", function() {
+					var ref = now();
+					var target = dateAdd( "n", 5, ref );
+					expect( momentFrom( target, ref ) ).toBe( "in 5m" );
+				} );
+
+				it( "accepts an epoch-second numeric target", function() {
+					var ref = now();
+					var target = dateAdd( "h", -2, ref );
+					var epoch = target.getTime() / 1000;
+					expect( momentFrom( epoch, ref ) ).toBe( "2h" );
+				} );
+			} );
+
+			describe( "goUrl()", function() {
+				it( "wraps an external href in the /go/ interstitial with base64 encoding", function() {
+					expect( goUrl( "https://example.com" ) ).toBe( "/go/" & toBase64( "https://example.com" ) );
+				} );
+
+				it( "returns empty string for an empty href", function() {
+					expect( goUrl( "" ) ).toBe( "" );
+				} );
+			} );
+
+		} );
+	}
+
+}

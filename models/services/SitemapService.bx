@@ -1,0 +1,60 @@
+/**
+ * SitemapService
+ *
+ * Builds the XML sitemap for search engine indexing on demand — the source ColdBox app wrote a
+ * static sitemap.xml file to the web root via a scheduled task; that scheduling mechanism doesn't
+ * exist here, and a boxlang-express route can regenerate the document per-request just as cheaply,
+ * so there's no file to keep in sync or a schedule to maintain. See routes/AppRouter.bx's
+ * sitemapRoute (GET /sitemap.xml), which caches the built XML for a few minutes rather than
+ * rebuilding it on every single crawler hit.
+ *
+ * Sitemap format: Sitemap Protocol 0.9 (https://www.sitemaps.org/schemas/sitemap/0.9).
+ */
+class {
+
+	/**
+	 * Builds and returns the sitemap XML as a string.
+	 *
+	 * Includes:
+	 *  - The homepage at priority 1.00, stamped with the current date-time.
+	 *  - Up to 5 000 recent non-deleted posts (from Admin::getRecentPosts()) at priority 0.80,
+	 *    each stamped with the post's updated_at date so edits are reflected in crawl scheduling.
+	 *
+	 * Post URLs are constructed as:
+	 *   {SITEURL}f/{forum}/comments/{id_short}/{slug}
+	 * where SITEURL is read from lib/Config.bx's siteUrl setting, forum is
+	 * URL-encoded, and slug is generated via the built-in slugify() function.
+	 */
+	function generate(){
+		var siteUrl   = new "lib.AppContext"().get( "Config" ).getSiteUrl();
+		var allPosts  = new "lib.AppContext"().get( "Admin" ).getRecentPosts( limit = 5000 );
+		// Exclude posts from private forums — they must not be indexed by search engines
+		var data      = allPosts.filter( (p) => !p.is_private );
+		var out     = [];
+
+		out.append( "<?xml version=""1.0"" encoding=""UTF-8""?>" );
+		out.append( "<urlset xmlns=""http://www.sitemaps.org/schemas/sitemap/0.9"">" );
+
+		// Homepage entry
+		out.append( "<url>" );
+		out.append( "<loc>" & siteUrl & "</loc>" );
+		out.append( "<lastmod>" & dateTimeFormat( now(), "iso" ) & "</lastmod>" );
+		out.append( "<changefreq>hourly</changefreq>" );
+		out.append( "<priority>1.00</priority>" );
+		out.append( "</url>" );
+
+		// One entry per recent post — use updated_at so edits are reflected in crawl scheduling
+		for ( p in data ) {
+			out.append( "<url>" );
+			out.append( "<loc>" & siteUrl & "/f/" & encodeForURL( p.forum ) & "/comments/" & p.id_short & "/" & slugify( p.title ) & "</loc>" );
+			out.append( "<lastmod>" & dateTimeFormat( p.updated_at, "iso" ) & "</lastmod>" );
+			out.append( "<priority>0.80</priority>" );
+			out.append( "</url>" );
+		}
+
+		out.append( "</urlset>" );
+
+		return out.toList( char( 10 ) );
+	}
+
+}

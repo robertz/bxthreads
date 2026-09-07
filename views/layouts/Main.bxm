@@ -1,0 +1,198 @@
+<bx:output>
+<!doctype html>
+<html lang="en">
+<head>
+	<script>(function(){var s=localStorage.getItem('dt-theme');var t=s?s:(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');if(t==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="description" content="#data.meta.description#">
+	<meta name="author" content="#data.meta.author#">
+	<title>#data.meta.title#</title>
+
+	<bx:loop collection="#data.socialMeta#" item="i">
+		<meta property="#encodeForHTMLAttribute(i)#" content="#encodeForHTMLAttribute(data.socialMeta[i])#">
+	</bx:loop>
+
+	<base href="#data.baseUrl#">
+	<link rel="canonical" href="#encodeForHTMLAttribute(data.canonicalUrl)#">
+
+	<!--- Favicons --->
+	<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+	<link rel="apple-touch-icon" href="/favicon.svg">
+
+	<!--- Resource hints --->
+	<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+	<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+
+	<!--- CSS (render-critical) --->
+	<link rel="stylesheet" href="#data.assets.keyExists('site.css') ? data.assets['site.css'] : '/assets/css/site.css'#">
+
+	<!--- Non-critical CSS (deferred, does not block rendering) --->
+	<link rel="preload" href="/assets/icons/bootstrap-icons.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+	<noscript><link rel="stylesheet" href="/assets/icons/bootstrap-icons.css"></noscript>
+	<bx:if data.keyExists("needsPrism") && data.needsPrism>
+		<link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/prism-themes/1.9.0/prism-one-dark.min.css" integrity="sha512-c6S8OdtvoqZCbMfA1lWE0qd368pLdFvVHVILQzNizfowC+zV8rmVKdSlmL5SuidvATO0A7awDg53axd+s/9amw==" crossorigin="anonymous" referrerpolicy="no-referrer" as="style" onload="this.onload=null;this.rel='stylesheet'">
+		<noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism-themes/1.9.0/prism-one-dark.min.css" integrity="sha512-c6S8OdtvoqZCbMfA1lWE0qd368pLdFvVHVILQzNizfowC+zV8rmVKdSlmL5SuidvATO0A7awDg53axd+s/9amw==" crossorigin="anonymous" referrerpolicy="no-referrer"></noscript>
+	</bx:if>
+	<bx:loop array="#data.headerCss#" index="i">
+		<link rel="stylesheet" href="#i#">
+	</bx:loop>
+
+	<!--- Inline data (no external fetch, must run before deferred scripts) --->
+	<script type="application/json" id="dismal-data">#jsonSerialize(data.jsData)#</script>
+	<script>window.dismal = JSON.parse(document.getElementById('dismal-data').textContent);</script>
+
+	<!--- Deferred JS --->
+	<bx:if data.keyExists("needsPrism") && data.needsPrism>
+		<script defer src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.23.0/prism.min.js" integrity="sha512-YBk7HhgDZvBxmtOfUdvX0z8IH2d10Hp3aEygaMNhtF8fSOvBZ16D/1bXZTJV6ndk/L/DlXxYStP8jrF77v2MIg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+	</bx:if>
+	<script defer src="#data.assets.keyExists('global.js') ? data.assets['global.js'] : '/assets/js/global.js'#"></script>
+	<script defer src="/assets/js/actions.js"></script>
+	<script defer src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
+	<script defer src="/assets/js/realtime.js"></script>
+	<bx:loop array="#data.headerJs#" index="i">
+		<script defer src="#i#"></script>
+	</bx:loop>
+</head>
+<body>
+
+	<header>
+		<a class="skip-link" href="##main-content">Skip to content</a>
+		<nav class="header" aria-label="Primary">
+			<div class="header__inner dt-layout">
+
+				<button
+					type="button"
+					class="c-header__icon-btn d-lg-none"
+					data-mobile-nav-toggle
+					aria-label="Browse forums"
+					aria-expanded="false"
+					title="Browse forums">
+					<i class="bi bi-list" aria-hidden="true"></i>
+				</button>
+
+				<a class="header__logo text-white" href="/">
+					<span class="header__bracket">[</span>bx<span class="header__bracket">]</span>
+				</a>
+
+				<bx:set scopeForumDisplay = "">
+				<bx:if structKeyExists( data, "forum" ) && isStruct( data.forum ) && structKeyExists( data.forum, "display" ) && len( data.forum.display )>
+					<bx:set scopeForumDisplay = data.forum.display>
+				<bx:elseif structKeyExists( data, "searchForum" ) && len( data.searchForum )>
+					<bx:set scopeForumDisplay = data.searchForum>
+				</bx:if>
+				<bx:set inForum = len( scopeForumDisplay )>
+				<bx:set searchPlaceholder = inForum ? "Search f/" & encodeForHTMLAttribute( scopeForumDisplay ) & "…" : "Search…">
+				<form class="header__search" action="/search" method="get" role="search" aria-label="Site search">
+					<div class="c-search">
+						<label for="header-search-input" class="sr-only">Search #encodeForHTML(data.meta.author)#</label>
+						<i class="bi bi-search c-search__icon" aria-hidden="true"></i>
+						<input
+							id="header-search-input"
+							class="c-search__input"
+							type="search"
+							name="q"
+							placeholder="#searchPlaceholder#"
+							autocomplete="off"
+							maxlength="200"
+							aria-label="Search">
+						<bx:if inForum>
+							<div class="c-search__scope" id="search-scope-chip">
+								<span class="c-search__scope-label">f/#encodeForHTML( scopeForumDisplay )#</span>
+								<button type="button" class="c-search__scope-dismiss" id="search-scope-dismiss" aria-label="Remove forum filter and search all" title="Search all forums">
+									<i class="bi bi-x" aria-hidden="true"></i>
+								</button>
+								<input type="hidden" name="forum" id="search-forum-input" value="#encodeForHTMLAttribute( scopeForumDisplay )#">
+							</div>
+						</bx:if>
+					</div>
+				</form>
+
+				<div class="c-header__actions">
+					<button
+						id="theme-toggle"
+						class="c-header__icon-btn"
+						onclick="DTGlobal.toggleTheme(this)"
+						aria-label="Toggle light/dark mode"
+						title="Toggle theme">
+						<i class="bi bi-sun" aria-hidden="true"></i>
+					</button>
+					<bx:if data.isIdentified>
+						<a
+							class="c-header__icon-btn c-header__icon-btn--create"
+							href="/submit"
+							aria-label="Create a post"
+							title="New Post">
+							<i class="bi bi-plus-lg" aria-hidden="true"></i>
+							<span class="c-header__create-label">New Post</span>
+						</a>
+					</bx:if>
+					<bx:if data.isIdentified>
+						<div class="header-notif" data-notifications-widget style="position:relative;">
+							<button type="button" class="c-header__icon-btn" data-notifications-toggle aria-label="Notifications" title="Notifications">
+								<i class="bi bi-bell" aria-hidden="true"></i>
+								<span class="header-notif__badge" data-notification-badge style="#data.notificationUnreadCount > 0 ? '' : 'display:none;'#">#encodeForHTML( data.notificationUnreadCount )#</span>
+							</button>
+							<div class="header-notif__dropdown" data-notifications-dropdown style="display:none; position:absolute; right:0; top:100%; min-width:280px; background:var(--surface, ##1a1a1a); border:1px solid var(--ui-border-subtle); border-radius:6px; z-index:1000;">
+								<div class="header-notif__header" style="padding:8px 12px; font-weight:600; border-bottom:1px solid var(--ui-border-subtle);">Notifications</div>
+								<div data-notifications-list></div>
+							</div>
+						</div>
+					<bx:else>
+						<a class="c-header__btn" href="##" onclick="DTModal.open('login-modal');return false;" aria-haspopup="dialog">Join / Sign In</a>
+					</bx:if>
+					<bx:if data.isIdentified>
+						<div class="header-usermenu" data-usermenu-widget style="position:relative;">
+							<button type="button" class="header-usermenu__trigger" data-usermenu-toggle aria-label="User menu" aria-haspopup="true" aria-expanded="false" title="#encodeForHTMLAttribute(data.currentUser.user_name)#">
+								<i class="bi bi-person-circle" aria-hidden="true"></i>
+							</button>
+							<div class="header-usermenu__dropdown" data-usermenu-dropdown style="display:none;" role="menu">
+								<div class="header-usermenu__header">#encodeForHTML(data.currentUser.user_name)#</div>
+								<a class="header-usermenu__item" href="/u/#encodeForURL(data.currentUser.user_name)#" role="menuitem">Profile</a>
+								<a class="header-usermenu__item" href="/settings" role="menuitem">Settings</a>
+								<div class="header-usermenu__divider"></div>
+								<button type="button" class="header-usermenu__item header-usermenu__item--danger" data-logout-btn role="menuitem" style="width:100%;text-align:left;background:none;border:none;cursor:pointer;font:inherit;">Log Out</button>
+							</div>
+						</div>
+					</bx:if>
+				</div>
+
+			</div>
+		</nav>
+	</header>
+
+	<div class="mobile-nav-backdrop d-lg-none" data-mobile-nav-backdrop style="display:none;"></div>
+	<div class="mobile-nav-drawer d-lg-none" data-mobile-nav-drawer style="display:none;">
+		<div class="mobile-nav-drawer__header">
+			<span class="mobile-nav-drawer__title">Browse</span>
+			<button type="button" class="c-header__icon-btn" data-mobile-nav-close aria-label="Close">
+				<i class="bi bi-x-lg" aria-hidden="true"></i>
+			</button>
+		</div>
+		#data.mobileNav#
+	</div>
+
+	<main id="main-content" class="text-white" tabindex="-1">
+		#data.body#
+	</main>
+
+	#data.loginModal#
+
+	<bx:if inForum>
+		<script>
+			(function () {
+				var chip = document.getElementById('search-scope-chip');
+				var forumInput = document.getElementById('search-forum-input');
+				var searchInput = document.getElementById('header-search-input');
+				document.getElementById('search-scope-dismiss').addEventListener('click', function () {
+					chip.style.display = 'none';
+					forumInput.disabled = true;
+					searchInput.placeholder = 'Search…';
+					searchInput.focus();
+				});
+			})();
+		</script>
+	</bx:if>
+</body>
+</html>
+</bx:output>

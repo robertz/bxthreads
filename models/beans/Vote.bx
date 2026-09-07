@@ -1,0 +1,259 @@
+/**
+ * Handles upvote/downvote operations on posts and comments.
+ *
+ * All three public methods use a dual-target pattern: pass a UUID in `posts_id`
+ * to target a post, or in `comments_id` to target a comment — leave the other
+ * as an empty string. A vote value of +1 is an upvote; -1 is a downvote.
+ *
+ * This bean is stateless for query purposes — `toggle()`, `getScore()`, and
+ * `getUserVote()` all take their targets as arguments rather than relying on
+ * loaded state.
+ *
+ * @property {string}  id          - Full UUID of the vote record
+ * @property {string}  users_id    - UUID of the voting user
+ * @property {string}  posts_id    - UUID of the voted-on post (empty for comment votes)
+ * @property {string}  comments_id - UUID of the voted-on comment (empty for post votes)
+ * @property {numeric} vote        - +1 (upvote) or -1 (downvote)
+ * @property {string}  created_at  - DB creation timestamp
+ */
+class accessors="true" {
+
+	property name="id";
+	property name="users_id";
+	property name="posts_id";
+	property name="comments_id";
+	property name="vote";
+	property name="created_at";
+
+	/**
+	 * Initializes the bean with empty/default values.
+	 * Called automatically by AppContext's scanDirectory() on instantiation.
+	 *
+	 * @return {Vote} This instance.
+	 */
+	function init(){
+		variables.id          = "";
+		variables.users_id    = "";
+		variables.posts_id    = "";
+		variables.comments_id = "";
+		variables.vote        = 0;
+		variables.created_at  = "";
+		return this;
+	}
+
+	/**
+	 * Returns a plain-struct snapshot of all vote properties.
+	 *
+	 * @return {struct} id, users_id, posts_id, comments_id, vote, created_at.
+	 */
+	function getMemento(){
+		return {
+			"id"          : variables.id,
+			"users_id"    : variables.users_id,
+			"posts_id"    : variables.posts_id,
+			"comments_id" : variables.comments_id,
+			"vote"        : variables.vote,
+			"created_at"  : variables.created_at
+		};
+	}
+
+	/**
+	 * Toggles a vote for a user on a post or comment.
+	 *
+	 * - Same vote again → removes the vote ("removed")
+	 * - Opposite vote → flips the vote in place ("flipped")
+	 * - No existing vote → inserts a new row ("created")
+	 *
+	 * Pass the target UUID in `posts_id` OR `comments_id`; leave the other as "".
+	 *
+	 * @param {string}  users_id    - UUID of the voting user.
+	 * @param {numeric} vote        - +1 for upvote, -1 for downvote.
+	 * @param {string}  posts_id    - UUID of the target post (optional).
+	 * @param {string}  comments_id - UUID of the target comment (optional).
+	 * @return {struct} `{ action: "created"|"flipped"|"removed" }`
+	 */
+	function toggle(
+		required string users_id,
+		required numeric vote,
+		string posts_id = "",
+		string comments_id = ""
+	){
+		var target = resolveTarget( arguments.posts_id, arguments.comments_id );
+
+		var existing = queryExecute(
+			"SELECT BIN_TO_UUID(id) AS id, vote
+			 FROM Votes
+			 WHERE users_id = UUID_TO_BIN(:users_id)
+			   AND #target.col# = UUID_TO_BIN(:target_id)
+			 LIMIT 1",
+			{
+				"users_id"  : { value : arguments.users_id, cfsqltype : "cf_sql_varchar" },
+				"target_id" : { value : target.id, cfsqltype : "cf_sql_varchar" }
+			},
+			{ returnType : "array" }
+		);
+
+		var action = "";
+
+		if ( existing.len() ) {
+			if ( existing[ 1 ].vote == arguments.vote ) {
+				// Same vote — remove
+				queryExecute(
+					"DELETE FROM Votes WHERE id = UUID_TO_BIN(:id)",
+					{ "id" : { value : existing[ 1 ].id, cfsqltype : "cf_sql_varchar" } }
+				);
+				action = "removed";
+			} else {
+				// Different vote — flip
+				queryExecute(
+					"UPDATE Votes SET vote = :vote WHERE id = UUID_TO_BIN(:id)",
+					{
+						"vote" : { value : arguments.vote, cfsqltype : "cf_sql_tinyint" },
+						"id"   : { value : existing[ 1 ].id, cfsqltype : "cf_sql_varchar" }
+					}
+				);
+				action = "flipped";
+			}
+		} else {
+			// No existing vote — insert
+			var newId = lCase( createGUID() );
+			queryExecute(
+				"INSERT INTO Votes (id, users_id, #target.col#, vote)
+				 VALUES (UUID_TO_BIN(:id), UUID_TO_BIN(:users_id), UUID_TO_BIN(:target_id), :vote)",
+				{
+					"id"        : { value : newId, cfsqltype : "cf_sql_varchar" },
+					"users_id"  : { value : arguments.users_id, cfsqltype : "cf_sql_varchar" },
+					"target_id" : { value : target.id, cfsqltype : "cf_sql_varchar" },
+					"vote"      : { value : arguments.vote, cfsqltype : "cf_sql_tinyint" }
+				}
+			);
+			action = "created";
+		}
+
+		var targetShort = left( target.id, 8 );
+		var userShort   = left( arguments.users_id, 8 );
+		cache( "dismalCache" ).clear( "vote:stats:#targetShort#" );
+		cache( "dismalCache" ).clear( "uservote:#userShort#:#targetShort#" );
+
+		var isPost = len( arguments.posts_id );
+		var actTargetType = isPost ? "post" : "comment";
+		if ( action == "removed" ) {
+			new "lib.AppContext"().get( "ActivityService" ).log( arguments.users_id, "unvote_#actTargetType#", actTargetType, target.id );
+		} else {
+			new "lib.AppContext"().get( "ActivityService" ).log( arguments.users_id, "vote_#actTargetType#", actTargetType, target.id, { "vote": arguments.vote } );
+		}
+
+		return { "action" : action };
+	}
+
+	/**
+	 * Returns the net vote score (sum of all +1/-1 values) for a post or comment.
+	 * Returns 0 if there are no votes.
+	 * Pass the target UUID in `posts_id` OR `comments_id`; leave the other as "".
+	 *
+	 * @param {string} posts_id    - UUID of the target post (optional).
+	 * @param {string} comments_id - UUID of the target comment (optional).
+	 * @return {numeric} Net score.
+	 */
+	function getScore( string posts_id = "", string comments_id = "" ){
+		var target = resolveTarget( arguments.posts_id, arguments.comments_id );
+		return getVoteStats( target ).score;
+	}
+
+	/**
+	 * Returns the current user's vote on a post or comment.
+	 * Pass the target UUID in `posts_id` OR `comments_id`; leave the other as "".
+	 *
+	 * @param {string} users_id    - UUID of the user.
+	 * @param {string} posts_id    - UUID of the target post (optional).
+	 * @param {string} comments_id - UUID of the target comment (optional).
+	 * @return {numeric} +1, -1, or 0 if the user has not voted.
+	 */
+	function getUserVote( required string users_id, string posts_id = "", string comments_id = "" ){
+		var target     = resolveTarget( arguments.posts_id, arguments.comments_id );
+		var uid        = arguments.users_id;
+		var cacheKey = "uservote:#left( uid, 8 )#:#left( target.id, 8 )#";
+		var col      = target.col;
+		var tid      = target.id;
+		return cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => {
+				var result = queryExecute(
+					"SELECT vote FROM Votes
+					 WHERE users_id = UUID_TO_BIN(:users_id)
+					   AND #col# = UUID_TO_BIN(:target_id)
+					 LIMIT 1",
+					{
+						"users_id"  : { value : uid, cfsqltype : "cf_sql_varchar" },
+						"target_id" : { value : tid, cfsqltype : "cf_sql_varchar" }
+					},
+					{ returnType : "array" }
+				);
+				return result.len() ? result[ 1 ].vote : 0;
+			}
+		);
+	}
+
+	/**
+	 * Returns the total number of upvotes (+1 votes only) for a post.
+	 * Downvotes are not counted. Returns 0 if there are no upvotes.
+	 *
+	 * @param {string} posts_id - UUID of the target post.
+	 * @return {numeric} Total upvote count.
+	 */
+	function getUpvoteCount( required string posts_id ){
+		var target = resolveTarget( arguments.posts_id, "" );
+		return getVoteStats( target ).upcount;
+	}
+
+	// -------------------------------------------------------------------------
+	// Private
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Resolves the target column name and ID from the dual-target arguments.
+	 * Shared by `toggle()`, `getScore()`, and `getUserVote()`.
+	 *
+	 * @param {string} posts_id    - UUID of the target post (or "").
+	 * @param {string} comments_id - UUID of the target comment (or "").
+	 * @return {struct} `{ col: "posts_id"|"comments_id", id: "<uuid>" }`
+	 */
+	private struct function resolveTarget( string posts_id = "", string comments_id = "" ){
+		var isPost = len( arguments.posts_id );
+		return {
+			col : isPost ? "posts_id" : "comments_id",
+			id  : isPost ? arguments.posts_id : arguments.comments_id
+		};
+	}
+
+	/**
+	 * Returns `{ score, upcount }` for a target, cached under `vote:stats:{short}`.
+	 * Both values are fetched in a single query.
+	 */
+	private struct function getVoteStats( required struct target ){
+		var targetCol = arguments.target.col;
+		var targetId  = arguments.target.id;
+		var cacheKey  = "vote:stats:#left( targetId, 8 )#";
+		return cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => {
+				var col = targetCol;
+				var tid = targetId;
+				var result = queryExecute(
+					"SELECT
+						COALESCE(SUM(vote), 0) AS score,
+						COALESCE(SUM(CASE WHEN vote = 1 THEN 1 ELSE 0 END), 0) AS upcount
+					 FROM Votes
+					 WHERE #col# = UUID_TO_BIN(:target_id)",
+					{ "target_id" : { value : tid, cfsqltype : "cf_sql_varchar" } },
+					{ returnType : "array" }
+				);
+				return {
+					score   : result.len() ? result[ 1 ].score : 0,
+					upcount : result.len() ? result[ 1 ].upcount : 0
+				};
+			}
+		);
+	}
+
+}

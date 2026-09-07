@@ -1,0 +1,58 @@
+/**
+ * UsersService
+ *
+ * Singleton service providing admin-level user queries that span multiple tables.
+ * Used by the moderator dashboard to display the full user roster with their
+ * permissions and forum subscriptions in a single query.
+ */
+class {
+
+	/**
+	 * Returns all registered users with their permissions and forum subscriptions.
+	 *
+	 * Executes a single query that LEFT JOINs two aggregating subqueries:
+	 *  - permissions subquery: GROUP_CONCATs all permission strings for each user
+	 *    (comma-separated, e.g. "FORUM_MODERATOR_NEWS,RENEGADE_ADMIN").
+	 *  - forums subquery: GROUP_CONCATs all subscribed forum display names for each user
+	 *    (comma-separated, e.g. "gaming,news,tech").
+	 *
+	 * Users with no permissions get a NULL permissions column.
+	 * Users with no forum subscriptions get a NULL forums column.
+	 *
+	 * @return Array of structs, one per user. Keys: id (UUID string), email, user_name,
+	 *         created_at, updated_at, permissions (CSV string or null), forums (CSV string or null).
+	 */
+	function list_users(){
+		var sql = "
+			SELECT
+				BIN_TO_UUID(u.id) AS id,
+				u.email,
+				u.created_at,
+				u.updated_at,
+				u.user_name,
+				p.permissions,
+				f.forums
+			FROM Users AS u
+			LEFT JOIN (
+				SELECT
+					up.users_id,
+					GROUP_CONCAT(p.permission ORDER BY p.permission SEPARATOR ',') AS permissions
+				FROM UsersPermissions AS up
+				JOIN Permissions AS p ON p.id = up.permissions_id
+				GROUP BY up.users_id
+			) AS p
+			ON p.users_id = u.id
+			LEFT JOIN (
+				SELECT
+					uf.users_id,
+					GROUP_CONCAT(f.display ORDER BY f.display SEPARATOR ',') AS forums
+				FROM UsersForums AS uf
+				JOIN Forums AS f ON f.id = uf.forums_id
+				GROUP BY uf.users_id
+			) AS f
+			ON f.users_id = u.id;
+		";
+		return queryExecute( sql, {}, { returnType: "array" } );
+	}
+
+}

@@ -1,0 +1,58 @@
+<bx:output>
+<nav class="left-nav">
+
+	<bx:if data.isIdentified>
+		<p class="left-nav__section-label">Me</p>
+		<a href="/home"
+		   class="left-nav__row #data.currentPath == '/home' ? 'left-nav__row--active' : ''# text-decoration-none">
+			<i class="bi bi-house-fill left-nav__icon"></i>
+			<span>Home</span>
+		</a>
+		<a href="/u/#encodeForURL(data.currentUser.user_name)#"
+		   class="left-nav__row #data.currentPath.startsWith('/u/' & data.currentUser.user_name) ? 'left-nav__row--active' : ''# text-decoration-none">
+			<i class="bi bi-person-fill left-nav__icon"></i>
+			<span>u/#encodeForHTML(data.currentUser.user_name)#</span>
+		</a>
+
+		<bx:if data.currentUser.permissions.find("RENEGADE_ADMIN")>
+			<hr class="left-nav__divider">
+			<a href="/mod"
+			   class="left-nav__row left-nav__row--mod #data.currentPath.startsWith('/mod') ? 'left-nav__row--active' : ''# text-decoration-none">
+				<i class="bi bi-shield-fill-check left-nav__icon"></i>
+				<span>Mod</span>
+			</a>
+		</bx:if>
+
+		<hr class="left-nav__divider">
+	</bx:if>
+
+	<a href="/top-viewed"
+	   class="left-nav__row #data.currentPath == '/top-viewed' ? 'left-nav__row--active' : ''# text-decoration-none">
+		<i class="bi bi-eye-fill left-nav__icon"></i>
+		<span>Top Viewed</span>
+	</a>
+
+	<hr class="left-nav__divider">
+
+	<p class="left-nav__section-label">Forums</p>
+	<a href="/f/all"
+	   class="left-nav__row #(data.currentPath == '/f/all' || (!data.isIdentified && (data.currentPath == '/' || data.currentPath == ''))) ? 'left-nav__row--active' : ''# text-decoration-none"
+	   title="Everything">
+		<i class="bi bi-hash left-nav__icon" aria-hidden="true"></i>
+		<span>f/all</span>
+	</a>
+
+	<bx:loop array="#data.forumsList#" index="i">
+		<bx:if !i.is_private
+			|| data.currentUser.permissions.listFind("RENEGADE_ADMIN")
+			|| data.subscribedForumIds.keyExists(i.id_short)>
+			<a href="/f/#encodeForURL(i.display)#"
+			   class="left-nav__row #(data.currentPath == '/f/' & i.display || data.currentPath.startsWith('/f/' & i.display & '/')) ? 'left-nav__row--active' : ''# text-decoration-none"
+			   title="#encodeForHTMLAttribute(i.about)#">
+				<i class="bi bi-hash left-nav__icon" aria-hidden="true"></i>
+				<span>f/#encodeForHTML(i.display)#</span>
+			</a>
+		</bx:if>
+	</bx:loop>
+</nav>
+</bx:output>

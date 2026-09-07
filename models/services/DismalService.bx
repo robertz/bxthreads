@@ -1,0 +1,153 @@
+/**
+ * Service layer for the API handler.
+ * Extracts and normalises query-parameter filters from rc, then delegates to DismalDAO.
+ * Enforces safe defaults: limit clamped to 1–100, deleted defaults to exclude deleted records.
+ */
+class {
+
+	// =========================================================================
+	// Posts
+	// =========================================================================
+
+	function getPostsFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getPosts( buildFilters( arguments.rc, [
+			"forum", "username", "deleted", "type", "before", "limit"
+		] ) );
+	}
+
+	function getTopViewedPostsFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getTopViewedPosts( buildFilters( arguments.rc, [
+			"forum", "hours", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Comments
+	// =========================================================================
+
+	function getCommentsFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getComments( buildFilters( arguments.rc, [
+			"username", "forum", "post_id_short", "deleted", "before", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Users
+	// =========================================================================
+
+	function getUsersFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getUsers( buildFilters( arguments.rc, [
+			"q", "permission", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Forums
+	// =========================================================================
+
+	function getForumsFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getForums( buildFilters( arguments.rc, [
+			"q", "is_private", "owner", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Votes
+	// =========================================================================
+
+	function getVotesFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getVotes( buildFilters( arguments.rc, [
+			"username", "type", "value", "post_id_short", "before", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Bookmarks
+	// =========================================================================
+
+	function getBookmarksFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getBookmarks( buildFilters( arguments.rc, [
+			"username", "forum", "before", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Notifications
+	// =========================================================================
+
+	function getNotificationsFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getNotifications( buildFilters( arguments.rc, [
+			"username", "is_read", "type", "before", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// History
+	// =========================================================================
+
+	function getHistoryFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getHistory( buildFilters( arguments.rc, [
+			"username", "forum", "post_id_short", "before", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Links
+	// =========================================================================
+
+	function getLinksFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getLinks( buildFilters( arguments.rc, [
+			"q", "post_id_short", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Achievements
+	// =========================================================================
+
+	function getAchievementsFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getAchievements( buildFilters( arguments.rc, [
+			"slug", "secret", "limit"
+		] ) );
+	}
+
+	function getAwardedAchievementsFromRequest( required struct rc ){
+		return new "lib.AppContext"().get( "DismalDAO" ).getAwardedAchievements( buildFilters( arguments.rc, [
+			"username", "slug", "limit"
+		] ) );
+	}
+
+	// =========================================================================
+	// Private helpers
+	// =========================================================================
+
+	/**
+	 * Extracts named keys from rc into a filters struct.
+	 * Numeric keys (before, limit, hours, value, is_read, is_private) are cast with val().
+	 * Limit is clamped to 1–100.
+	 * String keys are trimmed.
+	 */
+	private function buildFilters( required struct rc, required array keys ){
+		var numericKeys = [ "before", "limit", "hours", "value", "is_read", "is_private", "secret" ];
+		var localRc     = arguments.rc;
+		var localKeys   = arguments.keys;
+		var filters     = {};
+
+		for ( var key in localKeys ){
+			if ( !localRc.keyExists( key ) ) continue;
+
+			if ( numericKeys.find( key ) ){
+				filters[ key ] = val( localRc[ key ] );
+			} else {
+				filters[ key ] = trim( localRc[ key ] );
+			}
+		}
+
+		if ( filters.keyExists( "limit" ) ){
+			filters.limit = max( 1, min( 100, filters.limit ) );
+		}
+
+		return filters;
+	}
+
+}

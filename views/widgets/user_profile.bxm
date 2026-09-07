@@ -1,0 +1,64 @@
+<bx:output>
+<div class="card c-card--bordered mb-2">
+	<div class="card-body">
+		<div class="c-widget--user">
+			<div class="c-widget--user__avatar">
+				<i class="bi bi-person-circle"></i>
+			</div>
+			<div>
+				<div class="h6 mb-0">u/#encodeForHTML(data.profileUser.user_name)#</div>
+			</div>
+		</div>
+		<hr class="text-muted">
+		<div class="row text-center">
+			<div class="col-4">
+				<h6>#encodeForHTML(data.profileStats.karma)#</h6>
+				<div class="text-muted small">Karma</div>
+			</div>
+			<div class="col-4">
+				<h6>#encodeForHTML(data.profileStats.posts)#</h6>
+				<div class="text-muted small">#data.profileStats.posts eq 1 ? "Post" : "Posts"#</div>
+			</div>
+			<div class="col-4">
+				<h6>#encodeForHTML(data.profileStats.comments)#</h6>
+				<div class="text-muted small">#data.profileStats.comments eq 1 ? "Comment" : "Comments"#</div>
+			</div>
+		</div>
+		<hr class="text-muted">
+		<div class="text-muted small">
+			<i class="bi bi-cake2" aria-hidden="true"></i>
+			Joined <span class="ts-display" data-ts="#encodeForHTMLAttribute(data.profileUser.created_utc)#" title="">#momentFrom(data.profileUser.created_utc)#</span>
+		</div>
+		<bx:if data.keyExists( "profileAchievements" ) && data.profileAchievements.len()>
+			<hr class="text-muted">
+			<!--- Keyed by Achievements.metric, not slug — see views/user/achievements.bxm's iconMap
+			      for the full explanation of why this must match the real metric column values. --->
+			<bx:set achIcons = {
+				"account_days": "⧗", "contribution_count": "✦", "post_count": "✎",
+				"link_count": "⛓", "comment_count": "⟁", "likes_received": "◈",
+				"likes_given": "❋", "reply_count": "↳", "streak_days": "◉",
+				"load_more_count": "⇓", "account_days_max_posts": "◌", "absence_days": "⟳"
+			}>
+			<bx:set tierHex = [ "##78716c", "##059669", "##0284c7", "##7c3aed", "##d97706" ]>
+			<bx:set tierRarity = [ "Common", "Uncommon", "Rare", "Epic", "Legendary" ]>
+			<div class="text-muted small mb-1" style="letter-spacing:0.5px;">Achievements</div>
+			<div class="c-profile-ach">
+				<bx:loop array="#data.profileAchievements#" index="ach">
+					<bx:if ach.secret>
+						<bx:continue>
+					</bx:if>
+					<bx:set hex = tierHex[ ach.current_tier ]>
+					<bx:set icon = achIcons.keyExists( ach.metric ) ? achIcons[ ach.metric ] : "★">
+					<div class="c-profile-ach__item" style="--tier-color: #hex#;">
+						<span class="c-profile-ach__icon">#icon#</span>
+						<div class="c-profile-ach__text">
+							<span class="c-profile-ach__label">#encodeForHTML( ach.tier_label )#</span>
+							<span class="c-profile-ach__desc">#encodeForHTML( ach.title )#</span>
+						</div>
+					</div>
+				</bx:loop>
+			</div>
+		</bx:if>
+	</div>
+</div>
+</bx:output>

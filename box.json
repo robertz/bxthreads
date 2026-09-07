@@ -1,0 +1,36 @@
+{
+	"name": "bxThreads",
+	"version": "0.1.0",
+	"author": "",
+	"location": "forgeboxStorage",
+	"slug": "bxThreads",
+	"shortDescription": "Public boxlang-express demo port of DismalThreads (no ColdBox, no cbwire).",
+	"dependencies": {
+		"boxlang-express": "*",
+		"bx-esapi": "*",
+		"bx-mysql": "*",
+		"bx-jsoup": "*",
+		"bx-password-encrypt": "*",
+		"bx-markdown": "*"
+	},
+	"devDependencies": {
+		"testbox": "*",
+		"commandbox-boxlang": "*",
+		"commandbox-cfformat": "*"
+	},
+	"installPaths": {
+		"boxlang-express": "boxlang_modules/boxexpress/",
+		"bx-esapi": "boxlang_modules/bx-esapi/",
+		"bx-mysql": "boxlang_modules/bx-mysql/",
+		"bx-jsoup": "boxlang_modules/bx-jsoup/",
+		"bx-password-encrypt": "boxlang_modules/bx-password-encrypt/",
+		"bx-markdown": "boxlang_modules/bx-markdown/",
+		"testbox": "testbox/"
+	},
+	"scripts": {
+		"setup": "!boxlang setup.bxs",
+		"test": "!boxlang --bx-config ./boxlang.json tests/runner.bxs",
+		"backfill-achievements": "!boxlang --bx-config ./boxlang.json scripts/backfill-achievements.bxs"
+	},
+	"language": "BoxLang"
+}

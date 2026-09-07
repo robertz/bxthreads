@@ -1,0 +1,754 @@
+/**
+ * Represents a single post (text or link) in the forum application.
+ *
+ * Handles persistence, caching, comment tree construction, and view tracking.
+ * Posts have two types: "text" (body content) and "link" (external URL with
+ * scraped Open Graph metadata stored in the Links table via PostsLinks).
+ *
+ * Cached in `dismalCache` under the key `post:{id_short}`.
+ *
+ * NOTE: `trackView()` read the acting/viewing user from ColdBox's request-scoped
+ * `client.uid` (and the user-agent from the `CGI` scope) in the source app. There is
+ * no request-scoped `client` scope inside a bean here, so `trackView()` now takes
+ * `users_id` and `userAgent` as explicit arguments — callers must pass the current
+ * session's user id and the request's User-Agent header.
+ *
+ * @property {string}  id           - Full UUID of the post (binary-stored, returned as string)
+ * @property {string}  id_short     - First 8 characters of the UUID, used in URLs
+ * @property {string}  kind         - Reserved kind field
+ * @property {string}  forums_id    - UUID of the forum this post belongs to
+ * @property {string}  users_id     - UUID of the author
+ * @property {string}  user_name    - Display name of the author
+ * @property {string}  post_type    - "text" or "link"
+ * @property {string}  title        - Post title
+ * @property {string}  body         - Post body (markdown); empty for link posts
+ * @property {string}  link_url     - Submitted URL for link posts; empty for text posts
+ * @property {string}  json         - Reserved JSON field
+ * @property {numeric} deleted      - 0 = visible, 1 = soft-deleted
+ * @property {numeric} pinned       - 0 = normal, 1 = pinned to the top of its forum's feed
+ * @property {string}  pinned_at    - DB timestamp the post was pinned; null when not pinned
+ * @property {string}  created_at   - DB creation timestamp
+ * @property {string}  updated_at   - DB last-update timestamp
+ * @property {numeric} created_utc  - Creation time as UNIX timestamp
+ * @property {numeric} updated_utc  - Last-update time as UNIX timestamp
+ * @property {numeric} comments     - Cached count of non-deleted comments (default: 0)
+ * @property {struct}  link_data    - Open Graph metadata for link posts: url, title, description, image
+ */
+class accessors="true" {
+
+	property name="id";
+	property name="id_short";
+	property name="kind";
+	property name="forums_id";
+	property name="display";
+	property name="users_id";
+	property name="user_name";
+	property name="post_type";
+	property name="title";
+	property name="body";
+	property name="link_url";
+	property name="json";
+	property name="deleted";
+	property name="pinned";
+	property name="pinned_at";
+	property name="created_at";
+	property name="updated_at";
+	property name="created_utc";
+	property name="updated_utc";
+	property name="comments" default="0";
+	property name="link_data" default={};
+
+	/**
+	 * Initializes the bean with empty/default values.
+	 * Called automatically by AppContext's scanDirectory() on instantiation.
+	 *
+	 * @return {Post} This instance.
+	 */
+	function init(){
+		variables.populate    = new "lib.AppContext"().get( "Populate" );
+		variables.id          = "";
+		variables.id_short    = "";
+		variables.kind 		  = "";
+		variables.forums_id   = "";
+		variables.display     = "";
+		variables.users_id    = "";
+		variables.user_name   = "";
+		variables.post_type   = "";
+		variables.title       = "";
+		variables.body        = "";
+		variables.link_url    = "";
+		variables.json        = "";
+		variables.deleted     = "";
+		variables.pinned      = "0";
+		variables.pinned_at   = "";
+		variables.created_at  = "";
+		variables.updated_at  = "";
+		variables.created_utc = "";
+		variables.updated_utc = "";
+		variables.comments    = "0";
+		variables.link_data   = {};
+		return this;
+	}
+
+	/**
+	 * Returns a plain-struct snapshot of all post properties.
+	 * Used for serialization and populator round-trips.
+	 *
+	 * @return {struct} All post fields including link_data.
+	 */
+	function getMemento(){
+		return {
+			"id"          : variables.id,
+			"id_short"    : variables.id_short,
+			"kind"        : variables.kind,
+			"forums_id"   : variables.forums_id,
+			"display"     : variables.display,
+			"users_id"    : variables.users_id,
+			"user_name"   : variables.user_name,
+			"post_type"   : variables.post_type,
+			"title"       : variables.title,
+			"body"        : variables.body,
+			"json"        : variables.json,
+			"deleted"     : variables.deleted,
+			"pinned"      : variables.pinned,
+			"pinned_at"   : variables.pinned_at,
+			"created_at"  : variables.created_at,
+			"updated_at"  : variables.updated_at,
+			"created_utc" : variables.created_utc,
+			"updated_utc" : variables.updated_utc,
+			"comments"    : variables.comments,
+			"link_data"   : variables.link_data
+		}
+	}
+
+	/**
+	 * Loads a post by its short ID and populates this bean.
+	 *
+	 * Results are cached in `dismalCache` under `post:{id}`. The comment count
+	 * reflects only non-deleted comments. For link posts, `link_data` is also
+	 * populated via `getLinkData()`. Deleted posts are returned normally — callers
+	 * are responsible for checking the `deleted` flag.
+	 *
+	 * @param {string} id - The 8-character short ID from the URL.
+	 * @return {Post} This instance, populated if the post was found.
+	 */
+	function getByIdShort( required string id ){
+		var post    = {};
+		var shortId = arguments.id;
+
+		var cacheKey = "post:" & shortId;
+		post = cache("dismalCache").getOrSet(
+			cacheKey,
+			() => {
+				var qParams = { "id_short" : { value : shortId, cfsqltype : "cf_sql_varchar" } };
+				var sql     = "
+					WITH CommentsCount AS (
+						SELECT posts_id, COUNT(*) AS comment_count
+						FROM Comments
+						WHERE deleted = 0
+						GROUP BY posts_id
+					)
+					SELECT
+						BIN_TO_UUID(P.id) AS id,
+						P.id_short,
+						BIN_TO_UUID(P.forums_id) AS forums_id,
+						F.display,
+						BIN_TO_UUID(P.users_id) AS users_id,
+						U.user_name,
+						P.post_type,
+						P.title,
+						P.body,
+						P.deleted,
+						P.pinned,
+						P.pinned_at,
+						P.created_at,
+						P.updated_at,
+						UNIX_TIMESTAMP(P.created_at) AS created_utc,
+						UNIX_TIMESTAMP(P.updated_at) AS updated_utc,
+						COALESCE(CC.comment_count, 0) AS comments
+					FROM Posts P
+					LEFT JOIN Forums F ON F.id = P.forums_id
+					LEFT JOIN Users U ON U.id = P.users_id
+					LEFT JOIN CommentsCount CC ON CC.posts_id = P.id
+					WHERE P.id_short = :id_short
+					LIMIT 1;
+				";
+				var q = queryExecute( sql, qParams, { returnType : "array" } );
+				var innerPost = {};
+				if ( q.len() ) innerPost.append( q[ 1 ] );
+				return innerPost;
+			}
+		);
+		if ( !post.isEmpty() ) {
+			variables.populate.populateFromStruct( target = this, memento = post );
+		}
+
+		if ( variables.post_type == "link" ) {
+			variables.link_data = getLinkData();
+		}
+
+		return this;
+	}
+
+	/**
+	 * Persists a new post (and its associated link record, if applicable) inside a transaction.
+	 *
+	 * Before calling this method, the following properties must be set:
+	 * `id` (UUID), `forums_id`, `users_id`, `post_type`, `title`, `body`.
+	 * For link posts, `link_url` must also be set.
+	 *
+	 * Link handling:
+	 * - If a Links record for the URL already exists it is reused; otherwise a new one
+	 *   is created with Open Graph metadata scraped by SpiderService (spider errors are
+	 *   silently swallowed so the post still saves).
+	 * - A PostsLinks join record is always created.
+	 *
+	 * On success the transaction is committed and the bean is reloaded from the database.
+	 * On failure the transaction is rolled back and the error is written to the log.
+	 *
+	 * @return {boolean} true on success, false on failure.
+	 */
+	function createPost(){
+		transaction {
+			try {
+				if ( !len( variables.id ) ) {
+					throw( message = "id is required to create a post", type = "ValidationException" );
+				}
+				if ( !len( variables.forums_id ) ) {
+					throw( message = "forums_id is required to create a post", type = "ValidationException" );
+				}
+				if ( !len( variables.users_id ) ) {
+					throw( message = "users_id is required to create a post", type = "ValidationException" );
+				}
+
+				// if we are dealing with a link
+				if ( variables.post_type == "link" ) {
+					// Does the link already exist?
+
+					var link_exists = queryExecute(
+						"SELECT bin_to_uuid(id) as id, url, image FROM Links WHERE url = :url",
+						{ "url" : { value : variables.link_url, cfsqltype : "cf_sql_varchar" } }
+					);
+
+					var links_id = lCase( createGUID() );
+
+					if ( link_exists.recordCount ) {
+						links_id = link_exists.id;
+					} else {
+						var meta = { "url" : variables.link_url };
+
+						try {
+							meta.append( new "lib.AppContext"().get( "SpiderService" ).spider( variables.link_url ) );
+						} catch ( any e ) {
+						}
+
+						var sql = "
+							INSERT INTO Links(id, users_id, title, description, image, url)
+							VALUES (uuid_to_bin(:id), uuid_to_bin(:users_id), :title, :description, :image, :url)
+						";
+
+						var qparams = {
+							"id"       : { value : links_id, cfsqltype : "cf_sql_varchar" },
+							"users_id" : { value : variables.users_id, cfsqltype : "cf_sql_varchar" },
+							"url"      : { value : variables.link_url, cfsqltype : "cf_sql_varchar" },
+							"title"    : {
+								value     : meta.keyExists( "og:title" ) ? meta[ "og:title" ] : "",
+								cfsqltype : "cf_sql_varchar"
+							},
+							"description" : {
+								value     : meta.keyExists( "og:description" ) ? meta[ "og:description" ] : "",
+								cfsqltype : "cf_sql_varchar"
+							},
+							"image" : {
+								value     : meta.keyExists( "og:image" ) ? meta[ "og:image" ] : "",
+								cfsqltype : "cf_sql_varchar"
+							}
+						};
+
+						queryExecute( sql, qparams );
+					}
+				}
+				// end post_type == "link"
+
+				var qparams = {
+					"id"        : { value : variables.id, cfsqltype : "cf_sql_varchar" },
+					"forums_id" : {
+						value     : variables.forums_id,
+						cfsqltype : "cf_sql_varchar"
+					},
+					"users_id"  : { value : variables.users_id, cfsqltype : "cf_sql_varchar" },
+					"post_type" : {
+						value     : variables.post_type,
+						cfsqltype : "cf_sql_varchar"
+					},
+					"title" : { value : variables.title, cfsqltype : "cf_sql_varchar" },
+					"body"  : {
+						value     : variables.body,
+						cfsqltype : "cf_sql_longvarchar"
+					}
+				};
+
+				var sql = "
+					INSERT INTO Posts (id, forums_id, users_id, post_type, title, body)
+					VALUES (uuid_to_bin(:id), uuid_to_bin(:forums_id), uuid_to_bin(:users_id), :post_type, :title, :body)
+				";
+				queryExecute( sql, qparams );
+
+				// link tables
+				if ( getPost_type() == "link" ) {
+					// generate Posts -> Links link
+					var sql = "INSERT INTO PostsLinks (posts_id, links_id) VALUES (uuid_to_bin(:posts_id), uuid_to_bin(:links_id))";
+					var qparams = {
+						"posts_id" : { value : variables.id, cfsqltype : "cf_sql_varchar" },
+						"links_id" : { value : links_id, cfsqltype : "cf_sql_varchar" }
+					};
+					queryExecute( sql, qparams );
+				}
+				transaction action="commit";
+				new "lib.AppContext"().get( "AchievementService" ).updateStreak( variables.users_id );
+				cache( "dismalCache" ).clear( "admin:recent_posts" );
+				new "lib.AppContext"().get( "ActivityService" ).log( variables.users_id, "create_post", "post", variables.id, { "post_type": variables.post_type } );
+				reload();
+				new "lib.AppContext"().get( "AchievementService" ).evaluateOnPostCreate( variables.users_id );
+				return true;
+			} catch ( any e ) {
+				transaction action="rollback";
+				// Log error for debugging
+				new "lib.AppContext"().get( "Logger" ).error( "Error creating post: " & e.message & " " & e.detail );
+				return false;
+			}
+		}
+	}
+
+	/**
+	 * Persists changes to `body` and `deleted` for the current post.
+	 * Invalidates the `dismalCache` entry so the next read fetches fresh data.
+	 *
+	 * @return {Post} This instance (for method chaining).
+	 */
+	function save(){
+		var sql = "
+			UPDATE Posts
+			SET body = :body, deleted = :deleted
+			WHERE id_short = :id_short
+		";
+		var qParams = {
+			'body': { value: variables.body, cfsqltype: 'cf_sql_longvarchar' },
+			'deleted': { value: variables.deleted, cfsqltype: 'cf_sql_tinyint' },
+			'id_short': { value: variables.id_short, cfsqltype: 'cf_sql_varchar' }
+		}
+		queryExecute(sql, qParams);
+		cache( "dismalCache" )
+			.getKeys()
+			.filter( key => key.startsWith( "post:#variables.id_short#" ) )
+			.each( key => cache( "dismalCache" ).clear( key ) );
+		cache( "dismalCache" ).clear( "admin:recent_posts" );
+		cache( "dismalCache" ).clear( "admin:deleted_posts" );
+		return this;
+	}
+
+	/**
+	 * Flips the pinned state for this post within its forum.
+	 * Sets `pinned_at` to now when pinning, clears it when unpinning.
+	 * Callers are responsible for checking forum-moderator permission first.
+	 *
+	 * @return {Post} This instance, reloaded with the new state.
+	 */
+	function togglePin(){
+		if ( !hasLoaded() ) return this;
+		var newPinned = variables.pinned ? 0 : 1;
+		queryExecute(
+			"UPDATE Posts
+			 SET pinned = :pinned, pinned_at = CASE WHEN :pinned = 1 THEN NOW() ELSE NULL END
+			 WHERE id_short = :id_short",
+			{
+				"pinned"   : { value: newPinned, cfsqltype: "cf_sql_tinyint" },
+				"id_short" : { value: variables.id_short, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		reload();
+		return this;
+	}
+
+	/**
+	 * Evicts the cached post entry and re-loads from the database.
+	 * Use after any external change to ensure the bean reflects current DB state.
+	 *
+	 * @return {Post} This instance with refreshed data.
+	 */
+	function reload(){
+		cache( "dismalCache" ).getKeys()
+			.filter( key => key.startsWith( "post:#variables.id_short#" ) )
+			.each( key => cache( "dismalCache" ).clear( key ) );
+		getByIdShort( variables.id_short );
+		return this;
+	}
+
+	/**
+	 * Returns whether this bean has been loaded with database data.
+	 *
+	 * @return {boolean} true if `id` is non-empty.
+	 */
+	function hasLoaded(){
+		return len( variables.id ) ? true : false;
+	}
+
+	/**
+	 * Records a view of this post for the given user in the History table.
+	 * No-ops silently if the bean has not been loaded, the requester is a known bot,
+	 * or the viewer is the post author.
+	 *
+	 * @param {string} users_id  UUID of the viewing user (was `client.uid` in the source app —
+	 *                           the caller must supply the current session's user id).
+	 * @param {string} userAgent The request's User-Agent header (was read from the `CGI` scope
+	 *                           in the source app — the caller must supply it explicitly).
+	 * @return {Post} This instance (for method chaining).
+	 */
+	function trackView( required string users_id, string userAgent = "" ){
+		if ( !hasLoaded() || arguments.users_id == variables.users_id ) return this;
+		if ( isBot( arguments.userAgent ) ) return this;
+
+		var sql = "
+			INSERT INTO History(users_id, forums_id, posts_id)
+			VALUES(UUID_TO_BIN(:users_id), UUID_TO_BIN(:forums_id), UUID_TO_BIN(:posts_id))
+		";
+
+		var qParams = {
+			"users_id": { value: arguments.users_id, cfsqltype: "cf_sql_varchar" },
+			"forums_id": { value: variables.forums_id, cfsqltype: "cf_sql_varchar" },
+			"posts_id": { value: variables.id, cfsqltype: "cf_sql_varchar" }
+		}
+
+		queryExecute( sql, qParams );
+		cache( "dismalCache" ).clear( "post:#variables.id_short#:views" );
+
+		return this;
+	}
+
+	/**
+	 * Returns the total number of views recorded for this post.
+	 * Counts all rows in the History table for this post's ID.
+	 * Returns 0 if the bean has not been loaded.
+	 * Cached under `post:{id_short}:views`.
+	 *
+	 * @return {numeric} Total view count.
+	 */
+	function getViewCount(){
+		if ( !hasLoaded() ) return 0;
+		return cache( "dismalCache" ).getOrSet(
+			"post:#variables.id_short#:views",
+			() => {
+				var result = queryExecute(
+					"SELECT COUNT(*) AS cnt
+					 FROM History
+					 WHERE posts_id = UUID_TO_BIN(:posts_id)",
+					{ "posts_id": { value: variables.id, cfsqltype: "cf_sql_varchar" } },
+					{ returnType: "array" }
+				);
+				return result.len() ? result[ 1 ].cnt : 0;
+			}
+		);
+	}
+
+	/**
+	 * Returns a flat, chronologically ordered array of all comments for this post,
+	 * including soft-deleted ones. Deleted comments are included so callers can
+	 * render a "[deleted]" placeholder while preserving thread structure.
+	 *
+	 * @return {array} Array of comment structs:
+	 *                 id, id_short, parent_id, posts_id, users_id,
+	 *                 user_name, body, deleted, created_utc, updated_utc
+	 */
+	function listComments(){
+		var sql = "
+			SELECT
+				bin_to_uuid(C.id) AS id,
+				C.id_short,
+				bin_to_uuid(C.parent_id) as parent_id,
+				bin_to_uuid(C.posts_id) as posts_id,
+				bin_to_uuid(C.users_id) AS users_id,
+				U.user_name,
+				C.body,
+				C.deleted,
+				UNIX_TIMESTAMP(C.created_at) AS created_utc,
+				UNIX_TIMESTAMP(C.updated_at) AS updated_utc,
+				COALESCE(VS.vote_score, 0) AS vote_score,
+				COALESCE(VS.vote_up,    0) AS vote_up,
+				COALESCE(VS.vote_down,  0) AS vote_down
+			FROM Comments C
+			JOIN Users U ON C.users_id = U.id
+			LEFT JOIN (
+				SELECT
+					V.comments_id,
+					SUM(V.vote)      AS vote_score,
+					SUM(V.vote =  1) AS vote_up,
+					SUM(V.vote = -1) AS vote_down
+				FROM Votes V
+				WHERE V.comments_id IN (
+					SELECT id FROM Comments WHERE posts_id = UUID_TO_BIN(:posts_id)
+				)
+				GROUP BY V.comments_id
+			) VS ON VS.comments_id = C.id
+			WHERE C.posts_id = uuid_to_bin(:posts_id)
+			ORDER BY C.created_at ASC
+		";
+		var qparams = { "posts_id" : { value : variables.id, cfsqltype : "cf_sql_varchar" } };
+		return queryExecute( sql, qparams, { returnType : "array" } );
+	}
+
+	/**
+	 * Returns the cached comment tree for this post.
+	 *
+	 * Fetches all comments via `listComments()`, builds a parent→children index,
+	 * then assembles a nested tree starting from root comments (those with no
+	 * parent_id). Pass `criteria.root` to get a subtree anchored at a specific
+	 * comment ID instead.
+	 *
+	 * Results are cached in `dismalCache` under
+	 * `post:{id_short}:comments_tree:{criteriaKey}` where criteriaKey is either
+	 * "all" or the root comment ID. Use `getCommentsTreeWithChildren()` instead
+	 * when you already have a specific comment ID and want to avoid fetching the
+	 * full comment list.
+	 *
+	 * @param {struct} criteria - Optional. Pass `{ root: "<comment_id>" }` to
+	 *                            return only the subtree rooted at that comment.
+	 * @return {array} Array of top-level comment structs, each with a nested
+	 *                 `children` array. See `buildCommentTree()` for the shape.
+	 */
+	function getCommentsTree( struct criteria = {} ){
+		var criteriaKey = criteria.keyExists( "root" ) ? criteria.root : "all";
+		var cacheKey    = "post:#variables.id_short#:comments_tree:#criteriaKey#";
+		var commentTree = cache("dismalCache").getOrSet(
+			cacheKey,
+			() => {
+				var comments = listComments();
+				var out      = [];
+				var childMap = {};
+				comments.each( ( c ) => {
+					if ( len( c.parent_id ) ) {
+						if ( !childMap.keyExists( c.parent_id ) ) childMap[ c.parent_id ] = [];
+						childMap[ c.parent_id ].append( c );
+					}
+				} );
+				var root = comments.filter( ( row ) => {
+					return ( criteria.keyExists( "root" ) ? row.id == criteria.root : !len( row.parent_id ) );
+				} );
+				root.each( ( el ) => {
+					out.append( buildCommentTree( comments, el, 0, childMap ) );
+				} );
+				return out;
+			}
+		);
+
+		return commentTree;
+	}
+
+	/**
+	 * Returns a single comment and all its descendants as a nested tree, using a
+	 * server-side recursive CTE to fetch only the relevant subtree.
+	 *
+	 * Prefer this over `getCommentsTree( { root: id } )` when you have a specific
+	 * comment ID and don't need the rest of the post's comments — it avoids
+	 * fetching the full comment list. Results are not cached.
+	 *
+	 * @param {struct} criteria - Must contain `id`: the full UUID of the root comment.
+	 * @return {struct} The root comment struct with a nested `children` array,
+	 *                  or `{ id, id_short: "", children: [] }` if not found.
+	 */
+	function getCommentsTreeWithChildren(required struct criteria){
+		var sql = "
+			WITH RECURSIVE comment_tree AS (
+				-- seed: the parent comment (depth = 0)
+				SELECT
+					c.id,
+					c.parent_id,
+					c.posts_id,
+					c.users_id,
+					c.body,
+					UNIX_TIMESTAMP(c.created_at) AS created_utc,
+					UNIX_TIMESTAMP(c.updated_at) AS updated_utc,
+					c.deleted,
+					0 AS depth
+				FROM dismal.Comments AS c
+				WHERE c.id = UUID_TO_BIN(:id)
+				UNION ALL
+				-- recurse: children of any row already in the tree
+				SELECT
+					c.id,
+					c.parent_id,
+					c.posts_id,
+					c.users_id,
+					c.body,
+					UNIX_TIMESTAMP(c.created_at) AS created_utc,
+					UNIX_TIMESTAMP(c.updated_at) AS updated_utc,
+					c.deleted,
+					ct.depth + 1 AS depth
+				FROM dismal.Comments AS c
+				JOIN comment_tree AS ct
+					ON c.parent_id = ct.id
+			)
+			SELECT
+			BIN_TO_UUID(ct.id)                       AS id,
+			LEFT(BIN_TO_UUID(ct.id), 8)              AS id_short,
+			BIN_TO_UUID(ct.parent_id)                AS parent_id,
+			BIN_TO_UUID(ct.posts_id)                 AS posts_id,
+			ct.created_utc,
+			ct.updated_utc,
+			BIN_TO_UUID(ct.users_id)                 AS users_id,
+			u.user_name,
+			ct.body,
+			ct.deleted,
+			ct.depth,
+			COALESCE(VS.vote_score, 0) AS vote_score,
+			COALESCE(VS.vote_up,    0) AS vote_up,
+			COALESCE(VS.vote_down,  0) AS vote_down
+			FROM comment_tree AS ct
+			LEFT JOIN (
+				SELECT
+					V.comments_id,
+					SUM(V.vote)      AS vote_score,
+					SUM(V.vote =  1) AS vote_up,
+					SUM(V.vote = -1) AS vote_down
+				FROM Votes V
+				WHERE V.comments_id IN (SELECT id FROM comment_tree)
+				GROUP BY V.comments_id
+			) VS ON VS.comments_id = ct.id
+			JOIN dismal.Users AS u
+			ON u.id = ct.users_id
+			ORDER BY
+			ct.created_utc;
+		";
+		var qParams = {
+			'id': { value: criteria.id, cfsqltype: "cf_sql_varchar" }
+		}
+		var comments = queryExecute(sql, qParams, {returnType: "array"});
+		if (!comments.len()) return { "id": criteria.id, "id_short": "", "children": [] };
+		var rootEl = comments.filter(el => {
+			return el.id == criteria.id;
+		});
+		if (!rootEl.len()) return { "id": criteria.id, "id_short": "", "children": [] };
+		var childMap = {};
+		comments.each( ( c ) => {
+			if ( len( c.parent_id ) ) {
+				if ( !childMap.keyExists( c.parent_id ) ) childMap[ c.parent_id ] = [];
+				childMap[ c.parent_id ].append( c );
+			}
+		} );
+		return buildCommentTree(comments, rootEl[1], 0, childMap);
+	}
+
+	/**
+	 * Recursively assembles a nested comment struct from a flat comment array.
+	 *
+	 * Performance: when `childMap` is provided (a struct keyed by parent_id whose
+	 * values are arrays of child comment structs), children are looked up in O(1)
+	 * per node for overall O(n) construction. When `childMap` is omitted, the
+	 * function falls back to filtering `allComments` at each node (O(n²)) for
+	 * backwards compatibility with direct callers.
+	 *
+	 * @param {array}   allComments - Flat array of all comment structs for this post.
+	 * @param {struct}  el          - The comment struct to place at the root of this subtree.
+	 * @param {numeric} depth       - Current nesting depth (0 for top-level comments).
+	 * @param {struct}  childMap    - Optional pre-built parent_id → children[] index.
+	 * @return {struct} Comment struct with fields: id, id_short, posts_id, users_id,
+	 *                  user_name, body, deleted, created_utc, updated_utc, depth,
+	 *                  children (array of nested comment structs).
+	 */
+	function buildCommentTree(
+		required array allComments,
+		required struct el,
+		required numeric depth,
+		struct childMap = {}
+	){
+		var comment = {
+			"id"          : el.id,
+			"id_short"    : el.id_short,
+			"posts_id"    : el.posts_id,
+			"created_utc" : el.created_utc,
+			"updated_utc" : el.updated_utc,
+			"users_id"    : el.users_id,
+			"user_name"   : el.user_name,
+			"body"        : el.body,
+			"deleted"     : el.deleted,
+			"depth"       : depth,
+			"vote_score"  : el.keyExists( "vote_score" ) ? el.vote_score : 0,
+			"vote_up"     : el.keyExists( "vote_up" ) ? el.vote_up : 0,
+			"vote_down"   : el.keyExists( "vote_down" ) ? el.vote_down : 0,
+			"children"    : []
+		}
+		var children = childMap.isEmpty()
+			? allComments.filter( ( row ) => row.parent_id == el.id )
+			: ( childMap.keyExists( el.id ) ? childMap[ el.id ] : [] );
+
+		children.each( ( child ) => {
+			comment.children.append( buildCommentTree( allComments, child, depth + 1, childMap ) );
+		} );
+		return comment;
+	}
+
+	/**
+	 * Returns true when the given user-agent string belongs to a known bot or crawler.
+	 * Used by trackView() to suppress view recording for non-human traffic.
+	 *
+	 * @param {string} userAgent - Value of the request's User-Agent header.
+	 * @return {boolean} true if the UA matches a known bot pattern.
+	 */
+	private function isBot( required string userAgent ){
+		var ua = lCase( arguments.userAgent );
+		var botPatterns = [
+			// Search crawlers
+			"googlebot", "bingbot", "slurp", "duckduckbot",
+			"baiduspider", "yandexbot", "sogou", "exabot",
+			// Archivers
+			"ia_archiver", "archive.org_bot",
+			// Social-preview fetchers
+			"facebookexternalhit", "facebot", "twitterbot",
+			"linkedinbot", "whatsapp", "discordbot", "slackbot", "telegrambot",
+			// SEO / monitoring tools
+			"semrushbot", "ahrefsbot", "mj12bot", "dotbot",
+			// Generic signals (catches most unnamed crawlers)
+			"crawler", "spider", "bot"
+		];
+		for ( var pattern in botPatterns ) {
+			if ( ua.find( pattern ) ) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Returns the Open Graph metadata for this post's linked URL.
+	 *
+	 * Only meaningful for link posts (`post_type == "link"`); returns `{}` immediately
+	 * for text posts. Results are cached in `dismalCache` under
+	 * `post:{id_short}:link_data`. Returns `{}` when no matching Links record exists.
+	 *
+	 * @return {struct} Link metadata with fields: url, title, description, image.
+	 *                  Returns an empty struct for text posts or when no record is found.
+	 */
+	function getLinkData(){
+		if(variables.post_type != "link") return {};
+
+		var cacheKey = "post:#variables.id_short#:link_data";
+		var linkData = cache("dismalCache").getOrSet(
+			cacheKey,
+			() => {
+				var sql = "
+					SELECT L.image, L.url, L.title, L.description
+					FROM Links L
+					JOIN PostsLinks PL ON PL.links_id = L.id
+					JOIN Posts P ON PL.posts_id = P.id
+					WHERE P.id_short = :id_short
+					LIMIT 1
+				";
+				var result = queryExecute(
+					sql,
+					{ id_short: { value: variables.id_short, cfsqltype: "cf_sql_varchar" } },
+					{ returnType: "array" }
+				);
+				return result.len() ? result[ 1 ] : {};
+			}
+		);
+		return linkData;
+	}
+
+}

@@ -1,0 +1,616 @@
+/**
+ * Represents a registered user account.
+ *
+ * Handles authentication (via bx-password-encrypt's BCrypt BIFs), profile data, permission
+ * checks, forum subscriptions, and activity history. `password` is intentionally excluded
+ * from `getMemento()` to prevent accidental serialization.
+ *
+ * `getById()` and `getByIdShort()` both cache under `user:{id_short}` in `dismalCache` — they
+ * share the same cache entry. `getUserByName()` and `getUserByNameOrEmail()` are uncached. All
+ * four load methods share a private `buildUserQuery()` base SQL string that handles the SELECT
+ * and permissions subquery — ported from the source app's qb-based version (see DismalDAO.bx's
+ * header comment for why qb was dropped).
+ *
+ * @property {string}  id           - Full UUID of the user
+ * @property {string}  id_short     - First 8 characters of the UUID, used in URLs
+ * @property {string}  user_name    - Unique display username
+ * @property {string}  email        - User's email address
+ * @property {string}  password     - BCrypt-hashed password (never included in mementos)
+ * @property {string}  permissions  - Comma-separated permission strings from UsersPermissions
+ * @property {numeric} created_utc  - Account creation time as UNIX timestamp
+ * @property {numeric} updated_utc  - Last-update time as UNIX timestamp
+ */
+class accessors="true" {
+
+	property name="id";
+	property name="id_short";
+	property name="user_name";
+	property name="email";
+	property name="password";
+	property name="permissions";
+	property name="created_utc";
+	property name="updated_utc";
+
+	/**
+	 * Initializes the bean with empty/default values. Called automatically by AppContext's
+	 * scanDirectory() on instantiation.
+	 *
+	 * @return {User} This instance.
+	 */
+	function init() {
+		variables.populate    = new "lib.AppContext"().get( "Populate" );
+		variables.id           = "";
+		variables.id_short     = "";
+		variables.user_name    = "";
+		variables.email        = "";
+		variables.password     = "";
+		variables.permissions  = "";
+		variables.created_utc  = "";
+		variables.updated_utc  = "";
+
+		return this;
+	}
+
+	/**
+	 * Returns a plain-struct snapshot of the user's public properties.
+	 * `password` is deliberately excluded to prevent accidental exposure.
+	 *
+	 * @return {struct} id, id_short, user_name, email, permissions, created_utc, updated_utc.
+	 */
+	function getMemento() {
+		return {
+			"id"          : variables.id,
+			"id_short"    : variables.id_short,
+			"user_name"   : variables.user_name,
+			"email"       : variables.email,
+			"permissions" : variables.permissions,
+			"created_utc" : variables.created_utc,
+			"updated_utc" : variables.updated_utc
+		};
+	}
+
+	/**
+	 * Hashes a plaintext password with BCrypt and stores it on the bean.
+	 * Call this before `save()` when setting or changing a password.
+	 *
+	 * @param {string} password - Plaintext password to hash.
+	 * @return {User} This instance (for method chaining).
+	 */
+	function hashPassword( required string password ) {
+		variables.password = BCryptHash( arguments.password );
+		return this;
+	}
+
+	/**
+	 * Persists the user to the database.
+	 * Updates `user_name`, `email`, and `password` when the bean is loaded;
+	 * inserts a new row otherwise. Busts the user cache on update.
+	 *
+	 * @return {User} This instance (for method chaining).
+	 */
+	function save() {
+		if ( variables.id.len() ) { // has loaded — update
+			var qParams = {
+				"id"        : { value: variables.id, cfsqltype: "cf_sql_varchar" },
+				"user_name" : { value: variables.user_name, cfsqltype: "cf_sql_varchar" },
+				"email"     : { value: variables.email, cfsqltype: "cf_sql_varchar" },
+				"password"  : { value: variables.password, cfsqltype: "cf_sql_varchar" }
+			};
+			queryExecute(
+				"UPDATE Users SET user_name = :user_name, email = :email, password = :password WHERE id = UUID_TO_BIN(:id)",
+				qParams
+			);
+			cache( "dismalCache" ).clear( "user:#variables.id_short#" );
+		} else {
+			// Users.id has a DB-side DEFAULT (uuid_to_bin(uuid())), but that's never read back
+			// after a plain INSERT — generate the id client-side instead, same convention every
+			// other bean in this app already uses (Post, Bookmark, Vote), so getId() is usable
+			// immediately after save() (e.g. to set req.session.uid right after signup).
+			variables.id       = lCase( createGUID() );
+			variables.id_short = left( variables.id, 8 );
+			var qParams = {
+				"id"        : { value: variables.id, cfsqltype: "cf_sql_varchar" },
+				"user_name" : { value: variables.user_name, cfsqltype: "cf_sql_varchar" },
+				"email"     : { value: variables.email, cfsqltype: "cf_sql_varchar" },
+				"password"  : { value: variables.password, cfsqltype: "cf_sql_varchar" }
+			};
+			queryExecute(
+				"INSERT INTO Users (id, user_name, email, password) VALUES (UUID_TO_BIN(:id), :user_name, :email, :password)",
+				qParams
+			);
+		}
+		return this;
+	}
+
+	/**
+	 * Loads a user by their full UUID and populates this bean.
+	 * Result is cached in `dismalCache` under `user:{id_short}`.
+	 *
+	 * @param {string} id - Full UUID of the user.
+	 * @return {User} This instance, populated if the user was found.
+	 */
+	function getById( required string id ) {
+		var userId   = arguments.id;
+		var cacheKey = "user:#left( userId, 8 )#";
+		var user = cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => firstOrEmpty( queryExecute(
+				buildUserQuery() & " WHERE U.id = UUID_TO_BIN(:id) LIMIT 1",
+				{ id: { value: userId, cfsqltype: "cf_sql_varchar" } },
+				{ returnType: "array" }
+			) )
+		);
+		if ( !user.isEmpty() ) {
+			variables.populate.populateFromStruct( target = this, memento = user );
+		}
+		return this;
+	}
+
+	/**
+	 * Loads a user by their 8-character short ID and populates this bean.
+	 * Result is cached in `dismalCache` under `user:{id}`, sharing the same
+	 * cache entry as `getById()`.
+	 *
+	 * @param {string} id - The 8-character short ID from the URL.
+	 * @return {User} This instance, populated if the user was found.
+	 */
+	function getByIdShort( required string id ) {
+		var shortId  = arguments.id;
+		var cacheKey = "user:#shortId#";
+		var user = cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => firstOrEmpty( queryExecute(
+				buildUserQuery() & " WHERE U.id_short = :idShort LIMIT 1",
+				{ idShort: { value: shortId, cfsqltype: "cf_sql_varchar" } },
+				{ returnType: "array" }
+			) )
+		);
+		if ( !user.isEmpty() ) {
+			variables.populate.populateFromStruct( target = this, memento = user );
+		}
+		return this;
+	}
+
+	/**
+	 * Loads a user by their exact `user_name` and populates this bean.
+	 * Not cached. Use `getUserByNameOrEmail()` for login flows.
+	 *
+	 * @param {string} user - The exact username to look up.
+	 * @return {User} This instance, populated if the user was found.
+	 */
+	function getUserByName( required string user ) {
+		var result = firstOrEmpty( queryExecute(
+			buildUserQuery() & " WHERE U.user_name = :userName LIMIT 1",
+			{ userName: { value: arguments.user, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		) );
+		if ( !result.isEmpty() ) {
+			variables.populate.populateFromStruct( target = this, memento = result );
+		}
+		return this;
+	}
+
+	/**
+	 * Loads a user matching either `user_name` OR `email` and populates this bean.
+	 * Used for login flows where users may identify themselves by either field.
+	 * Not cached.
+	 *
+	 * @param {string} user - A username or email address to look up.
+	 * @return {User} This instance, populated if a matching user was found.
+	 */
+	function getUserByNameOrEmail( required string user ) {
+		var result = firstOrEmpty( queryExecute(
+			buildUserQuery() & " WHERE U.user_name = :userVal OR U.email = :userVal LIMIT 1",
+			{ userVal: { value: arguments.user, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		) );
+		if ( !result.isEmpty() ) {
+			variables.populate.populateFromStruct( target = this, memento = result );
+		}
+		return this;
+	}
+
+	/**
+	 * Verifies a plaintext password against the bean's stored BCrypt hash.
+	 * The bean must be loaded before calling this.
+	 *
+	 * @param {string} password - Plaintext password to verify.
+	 * @return {boolean} true if the password matches, false otherwise.
+	 */
+	function authenticate( required string password ) {
+		return BCryptVerify( arguments.password, variables.password );
+	}
+
+	/**
+	 * Toggles the current user's subscription to a forum.
+	 * If not subscribed, inserts a UsersForums row and returns true.
+	 * If already subscribed, deletes the row and returns false.
+	 * Returns false immediately if the bean has not been loaded.
+	 *
+	 * @param {string} forums_id - Full UUID of the forum to toggle.
+	 * @return {boolean} true if now subscribed, false if now unsubscribed (or bean unloaded).
+	 */
+	function handleSubscription( required string forums_id ) {
+		if ( !len( variables.id ) ) {
+			return false;
+		}
+
+		var qParams = {
+			uid: { value: variables.id, cfsqltype: "cf_sql_varchar" },
+			fid: { value: arguments.forums_id, cfsqltype: "cf_sql_varchar" }
+		};
+
+		var existing = queryExecute(
+			"SELECT 1 AS found FROM UsersForums WHERE users_id = UUID_TO_BIN(:uid) AND forums_id = UUID_TO_BIN(:fid) LIMIT 1",
+			qParams,
+			{ returnType: "array" }
+		);
+
+		if ( existing.isEmpty() ) {
+			queryExecute( "INSERT INTO UsersForums (users_id, forums_id) VALUES (UUID_TO_BIN(:uid), UUID_TO_BIN(:fid))", qParams );
+			return true;
+		} else {
+			queryExecute( "DELETE FROM UsersForums WHERE users_id = UUID_TO_BIN(:uid) AND forums_id = UUID_TO_BIN(:fid)", qParams );
+			return false;
+		}
+	}
+
+	/**
+	 * Returns all forums the user is subscribed to.
+	 * Returns an empty array if the bean has not been loaded.
+	 *
+	 * @return {array} Array of structs with `id_short` and `display` for each subscribed forum.
+	 */
+	function getSubscribedForums() {
+		if ( !len( variables.id ) ) return [];
+		return queryExecute(
+			"SELECT F.id_short, F.display FROM UsersForums UF JOIN Forums F ON F.id = UF.forums_id WHERE UF.users_id = UUID_TO_BIN(:id)",
+			{ id: { value: variables.id, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+	}
+
+	/**
+	 * Subscribes this user to a forum (INSERT IGNORE — safe to call if already subscribed).
+	 * Clears the user cache entry. No-op if the bean has not been loaded.
+	 *
+	 * @param {string} forums_id Full UUID of the forum.
+	 */
+	function subscribeForum( required string forums_id ) {
+		if ( !len( variables.id ) ) return;
+		queryExecute(
+			"INSERT IGNORE INTO UsersForums (users_id, forums_id) VALUES (UUID_TO_BIN(:uid), UUID_TO_BIN(:fid))",
+			{
+				uid: { value: variables.id, cfsqltype: "cf_sql_varchar" },
+				fid: { value: arguments.forums_id, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		cache( "dismalCache" ).clear( "user:" & variables.id_short );
+	}
+
+	/**
+	 * Unsubscribes this user from a forum (no-op if not subscribed).
+	 * Clears the user cache entry. No-op if the bean has not been loaded.
+	 *
+	 * @param {string} forums_id Full UUID of the forum.
+	 */
+	function unsubscribeForum( required string forums_id ) {
+		if ( !len( variables.id ) ) return;
+		queryExecute(
+			"DELETE FROM UsersForums WHERE users_id = UUID_TO_BIN(:uid) AND forums_id = UUID_TO_BIN(:fid)",
+			{
+				uid: { value: variables.id, cfsqltype: "cf_sql_varchar" },
+				fid: { value: arguments.forums_id, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		cache( "dismalCache" ).clear( "user:" & variables.id_short );
+	}
+
+	/**
+	 * Grants a named permission to this user.
+	 * Returns false if the permission name is not in the Permissions table or bean is unloaded.
+	 * Returns true on success (INSERT IGNORE — safe to call if already granted).
+	 * Clears the user cache on success.
+	 *
+	 * @param {string} permName Permission string (case-insensitive; stored upper-case).
+	 * @return {boolean} true on success, false if permission name unknown.
+	 */
+	boolean function addPermission( required string permName ) {
+		if ( !len( variables.id ) ) return false;
+		var upperPerm = uCase( trim( arguments.permName ) );
+		var permRows  = queryExecute(
+			"SELECT BIN_TO_UUID(id) AS id FROM Permissions WHERE permission = :perm LIMIT 1",
+			{ perm: { value: upperPerm, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		if ( !permRows.len() ) return false;
+		queryExecute(
+			"INSERT IGNORE INTO UsersPermissions (users_id, permissions_id) VALUES (UUID_TO_BIN(:uid), UUID_TO_BIN(:pid))",
+			{
+				uid: { value: variables.id, cfsqltype: "cf_sql_varchar" },
+				pid: { value: permRows[ 1 ].id, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		cache( "dismalCache" ).clear( "user:" & variables.id_short );
+		return true;
+	}
+
+	/**
+	 * Revokes a named permission from this user (no-op if not granted).
+	 * No-op if the bean has not been loaded. Clears the user cache entry.
+	 *
+	 * @param {string} permName Permission string (case-insensitive; stored upper-case).
+	 */
+	function removePermission( required string permName ) {
+		if ( !len( variables.id ) ) return;
+		var upperPerm = uCase( trim( arguments.permName ) );
+		queryExecute(
+			"DELETE UP FROM UsersPermissions UP JOIN Permissions P ON P.id = UP.permissions_id WHERE UP.users_id = UUID_TO_BIN(:uid) AND P.permission = :perm",
+			{
+				uid:  { value: variables.id, cfsqltype: "cf_sql_varchar" },
+				perm: { value: upperPerm, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+		cache( "dismalCache" ).clear( "user:" & variables.id_short );
+	}
+
+	/**
+	 * Returns the 5 most recently visited forums for this user, based on History.
+	 * Deduplicates by forum, keeping only the most recent visit per forum.
+	 * Returns an empty array if the bean has not been loaded.
+	 *
+	 * @return {array} Array of structs with `display` for each forum, newest first.
+	 */
+	function getRecentForums() {
+		if ( !len( variables.id ) ) return [];
+		var sql = "
+			SELECT F.display
+			FROM (
+				SELECT forums_id, MAX(created_at) AS latest_created_at
+				FROM History
+				WHERE users_id = UUID_TO_BIN(:id)
+				GROUP BY forums_id
+			) H
+			INNER JOIN Forums F ON H.forums_id = F.id
+			ORDER BY H.latest_created_at DESC
+			LIMIT 5
+		";
+		return queryExecute( sql, { id: { value: variables.id, cfsqltype: "cf_sql_varchar" } }, { returnType: "array" } );
+	}
+
+	/**
+	 * Returns the 25 most recent non-deleted posts authored by this user.
+	 * Posts from private forums are excluded unless `viewers_id` belongs to a subscriber.
+	 * Returns an empty array if the bean has not been loaded.
+	 *
+	 * @param {string} viewers_id UUID of the user viewing the profile. Pass empty string
+	 *                            or omit for anonymous access (private posts hidden).
+	 * @return {array} Array of post structs: id, id_short, created_utc, updated_utc,
+	 *                 forums_id, users_id, forum (display name), user_name, title, body.
+	 */
+	function getPosts( string viewers_id = "" ) {
+		if ( !variables.id.len() ) return [];
+		// Use a known-absent UUID for anonymous viewers so the EXISTS subquery returns false
+		var viewerParam = arguments.viewers_id.len() ? arguments.viewers_id : "00000000-0000-0000-0000-000000000000";
+		var sql = "
+			SELECT
+				BIN_TO_UUID(P.id)        AS id,
+				P.id_short,
+				UNIX_TIMESTAMP(P.created_at) AS created_utc,
+				UNIX_TIMESTAMP(P.updated_at) AS updated_utc,
+				BIN_TO_UUID(P.forums_id) AS forums_id,
+				BIN_TO_UUID(P.users_id)  AS users_id,
+				F.display                AS forum,
+				U.user_name,
+				P.title,
+				P.body
+			FROM Posts P
+			JOIN Users U  ON P.users_id  = U.id
+			JOIN Forums F ON P.forums_id = F.id
+			WHERE P.users_id = UUID_TO_BIN(:user_id)
+			  AND P.deleted = 0
+			  AND (
+			    F.is_private = 0
+			    OR EXISTS (
+			        SELECT 1 FROM UsersForums UF
+			        WHERE UF.users_id  = UUID_TO_BIN(:viewers_id)
+			          AND UF.forums_id = P.forums_id
+			    )
+			  )
+			ORDER BY P.created_at DESC
+			LIMIT 25
+		";
+		var qParams = {
+			user_id    : { value: variables.id, cfsqltype: "cf_sql_varchar" },
+			viewers_id : { value: viewerParam, cfsqltype: "cf_sql_varchar" }
+		};
+		return queryExecute( sql, qParams, { returnType: "array" } );
+	}
+
+	/**
+	 * Returns the 25 most recent non-deleted comments authored by this user,
+	 * along with the post and forum context, the vote score, and the username
+	 * of the comment being replied to (if any).
+	 * Comments from private forums are excluded unless `viewers_id` belongs to a subscriber.
+	 * Returns an empty array if the bean has not been loaded.
+	 *
+	 * @param {string} viewers_id UUID of the user viewing the profile. Pass empty string
+	 *                            or omit for anonymous access (private comments hidden).
+	 * @return {array} Array of comment structs: id, id_short, user_name, display (forum),
+	 *                 forum_icon, title (post), posted_by_user, post_id, post_id_short,
+	 *                 body, created_utc, vote_score, reply_to_user.
+	 */
+	function getComments( string viewers_id = "" ) {
+		if ( !len( variables.id ) ) return [];
+		// Use a known-absent UUID for anonymous viewers so the EXISTS subquery returns false
+		var viewerParam = arguments.viewers_id.len() ? arguments.viewers_id : "00000000-0000-0000-0000-000000000000";
+		var sql = "
+			SELECT
+				BIN_TO_UUID(C.id) AS id,
+				C.id_short,
+				U.user_name,
+				F.display,
+				F.icon AS forum_icon,
+				P.title,
+				U2.user_name AS posted_by_user,
+				BIN_TO_UUID(P.id) AS post_id,
+				P.id_short AS post_id_short,
+				C.body,
+				UNIX_TIMESTAMP(C.created_at) AS created_utc,
+				COALESCE((SELECT SUM(V.vote) FROM Votes V WHERE V.comments_id = C.id), 0) AS vote_score,
+				COALESCE((
+					SELECT V2.vote FROM Votes V2
+					WHERE V2.comments_id = C.id
+					  AND V2.users_id = UUID_TO_BIN(:viewers_id)
+					LIMIT 1
+				), 0) AS user_vote,
+				U3.user_name AS reply_to_user
+			FROM Comments C
+			LEFT JOIN Forums F ON C.forums_id = F.id
+			LEFT JOIN Users U ON C.users_id = U.id
+			LEFT JOIN Posts P ON C.posts_id = P.id
+			LEFT JOIN Users U2 ON P.users_id = U2.id
+			LEFT JOIN Comments PC ON C.parent_id = PC.id
+			LEFT JOIN Users U3 ON PC.users_id = U3.id
+			WHERE C.users_id = UUID_TO_BIN(:user_id)
+			  AND C.deleted = 0
+			  AND P.deleted = 0
+			  AND (
+			    F.is_private = 0
+			    OR EXISTS (
+			        SELECT 1 FROM UsersForums UF
+			        WHERE UF.users_id  = UUID_TO_BIN(:viewers_id)
+			          AND UF.forums_id = C.forums_id
+			    )
+			  )
+			ORDER BY C.created_at DESC
+			LIMIT 25
+		";
+		var qParams = {
+			user_id    : { value: variables.id, cfsqltype: "cf_sql_varchar" },
+			viewers_id : { value: viewerParam, cfsqltype: "cf_sql_varchar" }
+		};
+		return queryExecute( sql, qParams, { returnType: "array" } );
+	}
+
+	/**
+	 * Returns whether this bean has been loaded with database data.
+	 *
+	 * @return {boolean} true if `id` is non-empty.
+	 */
+	function hasLoaded() {
+		return len( variables.id ) ? true : false;
+	}
+
+	/**
+	 * Returns aggregate profile statistics for this user.
+	 * Returns zero counts if the bean has not been loaded.
+	 * Karma is the sum of all upvotes minus downvotes across the user's
+	 * non-deleted posts and comments.
+	 *
+	 * @return {struct} posts (count), comments (count), karma (net vote total).
+	 */
+	function getProfileStats() {
+		if ( !len( variables.id ) ) return { posts: 0, comments: 0, karma: 0 };
+		var sql = "
+			SELECT
+				(SELECT COUNT(*) FROM Posts WHERE users_id = UUID_TO_BIN(:uid) AND deleted = 0) AS posts,
+				(SELECT COUNT(*) FROM Comments WHERE users_id = UUID_TO_BIN(:uid) AND deleted = 0) AS comments,
+				COALESCE(
+					(SELECT SUM(V.vote) FROM Votes V
+					 JOIN Posts P ON V.posts_id = P.id
+					 WHERE P.users_id = UUID_TO_BIN(:uid) AND P.deleted = 0), 0
+				) + COALESCE(
+					(SELECT SUM(V.vote) FROM Votes V
+					 JOIN Comments C ON V.comments_id = C.id
+					 WHERE C.users_id = UUID_TO_BIN(:uid) AND C.deleted = 0), 0
+				) AS karma
+		";
+		var result = queryExecute( sql, { uid: { value: variables.id, cfsqltype: "cf_sql_varchar" } }, { returnType: "array" } );
+		return result.len() ? result[ 1 ] : { posts: 0, comments: 0, karma: 0 };
+	}
+
+	/**
+	 * Returns the 10 most recently viewed posts for this user.
+	 * Each post appears at most once (deduplicated by post, keeping the latest view).
+	 * Only non-deleted posts are included.
+	 * Returns an empty array if the bean has not been loaded.
+	 *
+	 * @return {array} Array of structs: id, id_short, icon, forum (display), created_utc,
+	 *                 title, comment_count, vote_score, viewed_at.
+	 */
+	function getRecentlyViewedPosts() {
+		if ( !len( variables.id ) ) return [];
+		var sql = "
+			WITH ranked AS (
+				SELECT
+					H.*,
+					ROW_NUMBER() OVER (PARTITION BY H.posts_id ORDER BY H.created_at DESC) AS rn
+				FROM History H
+				JOIN Users U ON U.id = H.users_id
+				WHERE U.id = UUID_TO_BIN(:id)
+			)
+			SELECT
+				BIN_TO_UUID(r.posts_id) AS id,
+				P.id_short,
+				F.icon,
+				F.display AS forum,
+				UNIX_TIMESTAMP(P.created_at) AS created_utc,
+				P.title,
+				(
+					SELECT COUNT(*)
+					FROM Comments C
+					WHERE C.posts_id = r.posts_id AND C.deleted = 0
+				) AS comment_count,
+				COALESCE((
+					SELECT SUM(V.vote)
+					FROM Votes V
+					WHERE V.posts_id = r.posts_id
+				), 0) AS vote_score,
+				r.created_at AS viewed_at
+			FROM ranked r
+			JOIN Posts P ON P.id = r.posts_id
+			JOIN Forums F ON F.id = P.forums_id
+			WHERE r.rn = 1 AND P.deleted = 0
+			ORDER BY r.created_at DESC
+			LIMIT 10
+		";
+		return queryExecute( sql, { id: { value: variables.id, cfsqltype: "cf_sql_varchar" } }, { returnType: "array" } );
+	}
+
+	// -------------------------------------------------------------------------
+	// Private
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Returns the base SELECT (as a SQL string) for the four load methods above — the standard
+	 * user column list plus the permissions GROUP_CONCAT subquery. Callers append their own
+	 * WHERE + LIMIT 1 and run it through queryExecute()/firstOrEmpty().
+	 *
+	 * @return {string} SQL text, missing only its WHERE clause.
+	 */
+	private function buildUserQuery() {
+		return "
+			SELECT
+				BIN_TO_UUID(U.id) AS id,
+				U.id_short,
+				U.user_name,
+				U.email,
+				U.password,
+				UNIX_TIMESTAMP(U.created_at) AS created_utc,
+				UNIX_TIMESTAMP(U.updated_at) AS updated_utc,
+				(
+					SELECT GROUP_CONCAT(P.permission)
+					FROM UsersPermissions UP
+					JOIN Permissions P ON UP.permissions_id = P.id
+					WHERE UP.users_id = U.id
+				) AS permissions
+			FROM Users U
+		";
+	}
+
+	private function firstOrEmpty( required array rows ) {
+		return arguments.rows.len() ? arguments.rows[ 1 ] : {};
+	}
+
+}

@@ -1,0 +1,42 @@
+<bx:output>
+<div class="mod-wrap">
+	#view("widgets/mod_nav")#
+	<div class="row">
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Users</h2>
+					<bx:if !data.users.len()>
+						<p class="mod-table__muted mb-0">No users found.</p>
+					<bx:else>
+						<table class="mod-table">
+							<thead>
+								<tr>
+									<th>Username</th>
+									<th>Email</th>
+									<th>Permissions</th>
+									<th>Forums</th>
+									<th>Joined</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#data.users#" index="u">
+									<tr>
+										<td class="mod-table__nowrap">
+											<a href="/u/#encodeForURL( u.user_name )#" class="post-link text-decoration-none">#encodeForHTML( u.user_name )#</a>
+										</td>
+										<td class="mod-table__nowrap">#encodeForHTML( u.email )#</td>
+										<td class="mod-table__muted">#encodeForHTML( len( u.permissions ?: "" ) ? u.permissions : "—" )#</td>
+										<td class="mod-table__muted">#encodeForHTML( len( u.forums ?: "" ) ? u.forums : "—" )#</td>
+										<td class="mod-table__nowrap">#momentFrom( u.created_at )#</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

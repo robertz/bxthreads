@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DismalThreads — Component Catalog</title>
+  <link rel="stylesheet" href="css/site.css">
+  <link rel="stylesheet" href="icons/bootstrap-icons.css">
+  <style>
+    .catalog-section { padding: 48px 0 32px; border-top: 1px solid var(--ui-border-subtle); }
+    .catalog-section:first-child { border-top: none; padding-top: 32px; }
+    .catalog-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 16px;
+    }
+    .catalog-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+    .catalog-swatch {
+      width: 48px; height: 48px; border-radius: var(--ui-radius-sm);
+      border: 1px solid var(--ui-border-subtle); display: inline-block;
+    }
+    .catalog-nav {
+      position: sticky; top: 60px; background: var(--ui-surface-1);
+      border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-sm);
+      padding: 12px; font-size: 12px; line-height: 2;
+    }
+    .catalog-nav a { color: var(--post-link-text); text-decoration: none; display: block; }
+    .catalog-nav a:hover { text-decoration: underline; }
+    body { color: var(--post-anchor); }
+  </style>
+</head>
+<body>
+
+<header>
+  <nav class="header" aria-label="Catalog header">
+    <div class="header__inner dt-layout">
+      <a class="header__logo" href="#">
+        <span class="header__bracket">[</span>dt<span class="header__bracket">]</span>
+      </a>
+      <div class="header__spacer"></div>
+      <div class="c-header__actions">
+        <button class="c-header__icon-btn" onclick="toggleTheme(this)" title="Toggle theme">
+          <i class="bi bi-sun" aria-hidden="true"></i>
+        </button>
+      </div>
+      <a class="c-header__btn" href="#">Join / Sign In</a>
+    </div>
+  </nav>
+</header>
+
+<main id="main-content" class="text-white" tabindex="-1">
+<div class="dt-layout" style="padding-top: 24px; padding-bottom: 64px;">
+<div class="row">
+
+  <!-- Nav -->
+  <div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+    <div class="catalog-nav" style="margin-top: 16px;">
+      <strong style="color: var(--text-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;">Components</strong>
+      <a href="#colors">Color tokens</a>
+      <a href="#typography">Typography</a>
+      <a href="#buttons">Buttons</a>
+      <a href="#cards">Cards</a>
+      <a href="#feed">Feed post</a>
+      <a href="#vote">Vote controls</a>
+      <a href="#actions">Action bar</a>
+      <a href="#forum-widgets">Forum widgets</a>
+      <a href="#toasts">Toasts</a>
+      <a href="#breadcrumb">Breadcrumb</a>
+      <a href="#editor">Editor</a>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="col-12 col-lg-10 p-2 order-1 order-lg-2">
+
+    <!-- ── Color tokens ── -->
+    <section id="colors" class="catalog-section">
+      <div class="catalog-label">Color tokens</div>
+      <div class="catalog-row" style="margin-bottom: 16px;">
+        <div>
+          <div class="catalog-swatch" style="background: var(--site-background-color);" title="--site-background-color"></div>
+          <div style="font-size:11px; color: var(--text-muted); margin-top:4px">background</div>
+        </div>
+        <div>
+          <div class="catalog-swatch" style="background: var(--ui-surface-1);" title="--ui-surface-1"></div>
+          <div style="font-size:11px; color: var(--text-muted); margin-top:4px">surface-1</div>
+        </div>
+        <div>
+          <div class="catalog-swatch" style="background: var(--ui-surface-2);" title="--ui-surface-2"></div>
+          <div style="font-size:11px; color: var(--text-muted); margin-top:4px">surface-2</div>
+        </div>
+        <div>
+          <div class="catalog-swatch" style="background: var(--post-link-text);" title="--post-link-text"></div>
+          <div style="font-size:11px; color: var(--text-muted); margin-top:4px">accent</div>
+        </div>
+        <div>
+          <div class="catalog-swatch" style="background: #50cd89;" title="#50cd89"></div>
+          <div style="font-size:11px; color: var(--text-muted); margin-top:4px">success</div>
+        </div>
+        <div>
+          <div class="catalog-swatch" style="background: #f1416c;" title="#f1416c"></div>
+          <div style="font-size:11px; color: var(--text-muted); margin-top:4px">danger</div>
+        </div>
+      </div>
+      <div class="catalog-row">
+        <span style="font-size:13px; color: var(--post-anchor);">--post-anchor</span>
+        <span style="font-size:13px; color: var(--text-secondary);">--text-secondary</span>
+        <span style="font-size:13px; color: var(--text-muted);">--text-muted</span>
+        <span style="font-size:13px; color: var(--text-sep);">--text-sep</span>
+        <span style="font-size:13px; color: var(--post-link-text);">--post-link-text</span>
+      </div>
+    </section>
+
+    <!-- ── Typography ── -->
+    <section id="typography" class="catalog-section">
+      <div class="catalog-label">Typography</div>
+      <div style="display: grid; gap: 12px;">
+        <div style="font-size: 22px; font-weight: 500; color: var(--color-white);">Post title — 22px / 500</div>
+        <div style="font-size: 18px; font-weight: 500; color: var(--post-anchor);">Feed title — 18px / 500</div>
+        <div style="font-size: 15px; color: var(--post-anchor); line-height: 1.6;">Body text — 15px / normal. The quick brown fox jumps over the lazy dog.</div>
+        <div style="font-size: 14px; color: rgba(255,255,255,0.85); line-height: 1.6;">Post body text — 14px / 0.85 opacity.</div>
+        <div style="font-size: 13px; color: var(--text-secondary);">Secondary text — 13px</div>
+        <div style="font-size: 12px; color: var(--text-muted);">Muted / meta text — 12px</div>
+        <div><code>inline code</code></div>
+        <blockquote>A blockquote with <strong>bold</strong> content and a subtle cyan left border.</blockquote>
+      </div>
+    </section>
+
+    <!-- ── Buttons ── -->
+    <section id="buttons" class="catalog-section">
+      <div class="catalog-label">Buttons &amp; header controls</div>
+      <div class="catalog-row" style="align-items: center;">
+        <a class="c-header__btn">Join / Sign In</a>
+        <button class="c-header__btn c-header__btn--outline">Outline</button>
+        <button class="c-header__icon-btn"><i class="bi bi-plus-lg" aria-hidden="true"></i></button>
+        <button class="c-header__icon-btn"><i class="bi bi-sun" aria-hidden="true"></i></button>
+        <button class="c-header__icon-btn"><i class="bi bi-bell" aria-hidden="true"></i></button>
+      </div>
+      <div class="catalog-row" style="margin-top: 16px; align-items: center;">
+        <button class="c-forum__cta py-2 w-100" style="max-width: 200px;">Subscribe</button>
+        <a class="c-forum__submit py-2 text-white text-decoration-none" style="display:block; max-width: 200px; text-align:center; border-radius:24px; background: var(--post-link-text);">Create Post</a>
+      </div>
+    </section>
+
+    <!-- ── Cards ── -->
+    <section id="cards" class="catalog-section">
+      <div class="catalog-label">Cards</div>
+      <div class="row">
+        <div class="col-12 col-lg-6">
+          <div class="card c-card--bordered mb-2">
+            <div class="card-body">
+              <div class="h6">Card title</div>
+              <div class="text-muted small">Card subtitle or description text.</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-12 col-lg-6">
+          <div style="background: var(--ui-surface-1); border: 1px solid var(--main-border-color); border-radius: var(--ui-radius-sm); padding: 16px;">
+            <div class="h6">c-card--bordered</div>
+            <div class="text-muted">Used for sidebar widgets and moderator dashboard panels.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Feed post ── -->
+    <section id="feed" class="catalog-section">
+      <div class="catalog-label">Feed post card</div>
+      <div class="c-feed-post" style="cursor: default;">
+        <div class="c-feed-post__header">
+          <img class="c-feed-post__avatar" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Ccircle cx='10' cy='10' r='10' fill='%23333'/%3E%3C/svg%3E" alt="">
+          <a href="#" class="c-feed-post__forum">f/technology</a>
+          <span class="c-feed-post__meta-sep">&bull;</span>
+          <span class="c-feed-post__timestamp ts-display">3 hours ago</span>
+        </div>
+        <div class="c-feed-post__body">
+          <div class="render-post">
+            <h2 class="c-feed-post__title">Sample feed post title demonstrating the card layout</h2>
+            <div class="c-feed-post__selftext">This is a preview of the self-text body. It truncates after three lines with a gradient mask so the card stays compact in the feed. The full post body is visible on the post detail page.</div>
+          </div>
+        </div>
+        <div class="c-feed-post__footer">
+          <div class="c-post__vote-pill">
+            <button class="c-vote" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></button>
+            <span class="c-vote__score">42</span>
+            <button class="c-vote" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></button>
+          </div>
+          <a href="#" class="c-post__action"><i class="bi bi-chat" aria-hidden="true"></i> 12 comments</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Vote controls ── -->
+    <section id="vote" class="catalog-section">
+      <div class="catalog-label">Vote controls</div>
+      <div class="catalog-row" style="align-items: center; gap: 24px;">
+        <div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">Default</div>
+          <div class="c-post__vote-pill">
+            <button class="c-vote" aria-label="Upvote"><i class="bi bi-arrow-up-short"></i></button>
+            <span class="c-vote__score">42</span>
+            <button class="c-vote" aria-label="Downvote"><i class="bi bi-arrow-down-short"></i></button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">Upvoted</div>
+          <div class="c-post__vote-pill">
+            <button class="c-vote c-vote--active-up" aria-label="Upvote"><i class="bi bi-arrow-up-short"></i></button>
+            <span class="c-vote__score c-vote__score--up">43</span>
+            <button class="c-vote" aria-label="Downvote"><i class="bi bi-arrow-down-short"></i></button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">Downvoted</div>
+          <div class="c-post__vote-pill">
+            <button class="c-vote" aria-label="Upvote"><i class="bi bi-arrow-up-short"></i></button>
+            <span class="c-vote__score c-vote__score--down">41</span>
+            <button class="c-vote c-vote--active-down" aria-label="Downvote"><i class="bi bi-arrow-down-short"></i></button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">Muted (anon)</div>
+          <div class="c-post__vote-pill">
+            <button class="c-vote c-vote--muted" disabled><i class="bi bi-arrow-up-short"></i></button>
+            <span class="c-vote__score c-vote--muted">42</span>
+            <button class="c-vote c-vote--muted" disabled><i class="bi bi-arrow-down-short"></i></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Action bar ── -->
+    <section id="actions" class="catalog-section">
+      <div class="catalog-label">Post action bar</div>
+      <div class="catalog-row" style="align-items: center;">
+        <a href="#" class="c-post__action"><i class="bi bi-chat" aria-hidden="true"></i> 12 comments</a>
+        <button class="c-post__action"><i class="bi bi-pencil" aria-hidden="true"></i> Edit</button>
+        <button class="c-post__action c-post__action--danger"><i class="bi bi-trash" aria-hidden="true"></i> Delete</button>
+        <span class="c-post__action"><i class="bi bi-eye" aria-hidden="true"></i> 248 views</span>
+      </div>
+    </section>
+
+    <!-- ── Forum widgets ── -->
+    <section id="forum-widgets" class="catalog-section">
+      <div class="catalog-label">Forum sidebar widgets</div>
+      <div class="row">
+        <div class="col-12 col-lg-6">
+          <div class="card c-card--bordered mb-2">
+            <div class="card-body">
+              <div class="c-widget--forum">
+                <img class="c-widget--forum__icon" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='50' height='50'%3E%3Ccircle cx='25' cy='25' r='25' fill='%23333'/%3E%3C/svg%3E" alt="">
+                <div>
+                  <h3 class="h6">f/technology</h3>
+                  <div class="text-muted small">A forum about technology news and discussion.</div>
+                </div>
+              </div>
+              <hr class="text-muted">
+              <div class="row">
+                <div class="col-4 text-center">
+                  <h6>1,204</h6>
+                  <div class="text-muted">Members</div>
+                </div>
+              </div>
+              <hr class="text-muted">
+              <div class="pb-2">
+                <button type="button" class="c-forum__cta py-2 w-100">Subscribe</button>
+              </div>
+              <div class="pb-2">
+                <a class="c-forum__submit py-2 text-white text-decoration-none" href="#">Create Post</a>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col-12 col-lg-6">
+          <div class="card c-card--bordered mb-2">
+            <div class="card-body">
+              <h5 style="font-weight:600; margin:0 0 8px; font-size:15px;">Moderators</h5>
+              <a href="#" class="d-block post-link text-decoration-none">u/moderator_name</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Toasts ── -->
+    <section id="toasts" class="catalog-section">
+      <div class="catalog-label">Toast notifications</div>
+      <div style="display: flex; flex-direction: column; gap: 8px; max-width: 320px;">
+        <div class="dt-toast dt-toast--info" style="position:static; opacity:1; transform:none; animation:none;">
+          <i class="bi bi-info-circle-fill" aria-hidden="true"></i>
+          <span>Draft restored from local storage</span>
+        </div>
+        <div class="dt-toast dt-toast--success" style="position:static; opacity:1; transform:none; animation:none;">
+          <i class="bi bi-check-circle-fill" aria-hidden="true"></i>
+          <span>Post submitted successfully</span>
+        </div>
+        <div class="dt-toast dt-toast--error" style="position:static; opacity:1; transform:none; animation:none;">
+          <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+          <span>Could not load more posts</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Breadcrumb ── -->
+    <section id="breadcrumb" class="catalog-section">
+      <div class="catalog-label">Breadcrumb navigation</div>
+      <nav class="c-breadcrumb" aria-label="Breadcrumb">
+        <ol class="c-breadcrumb__list">
+          <li class="c-breadcrumb__item"><a href="#" class="c-breadcrumb__link">f/technology</a></li>
+          <li class="c-breadcrumb__item"><span class="c-breadcrumb__sep" aria-hidden="true">›</span></li>
+          <li class="c-breadcrumb__item" aria-current="page">Sample post title</li>
+        </ol>
+      </nav>
+    </section>
+
+    <!-- ── Editor ── -->
+    <section id="editor" class="catalog-section">
+      <div class="catalog-label">Post editor shell</div>
+      <div class="create-post-container c-editor__wrap" style="max-width: 600px;">
+        <div class="editor-header">
+          <h2 class="editor-title">Create Post</h2>
+        </div>
+        <div class="editor-body" style="padding: 16px;">
+          <div class="editor-field" style="margin-bottom: 12px;">
+            <label class="editor-label" for="cat-forum">Post to</label>
+            <select id="cat-forum" class="editor-select">
+              <option>f/technology</option>
+              <option>f/science</option>
+            </select>
+          </div>
+          <div class="editor-tabs" role="tablist" style="margin-bottom: 12px;">
+            <button class="editor-tab editor-tab--active" role="tab">Post</button>
+            <button class="editor-tab" role="tab">Link</button>
+          </div>
+          <div class="editor-field">
+            <label class="editor-label" for="cat-title">Title</label>
+            <input id="cat-title" type="text" class="editor-input" placeholder="An interesting title...">
+          </div>
+          <div class="editor-toolbar" style="margin-top: 8px;">
+            <button class="editor-toolbar-btn" title="Bold"><i class="bi bi-type-bold"></i></button>
+            <button class="editor-toolbar-btn" title="Italic"><i class="bi bi-type-italic"></i></button>
+            <button class="editor-toolbar-btn" title="Code"><i class="bi bi-code"></i></button>
+            <span class="editor-toolbar-sep"></span>
+            <button class="editor-toolbar-btn" title="Link"><i class="bi bi-link-45deg"></i></button>
+            <button class="editor-toolbar-btn" title="Quote"><i class="bi bi-quote"></i></button>
+          </div>
+          <textarea id="cat-body" class="editor-textarea" rows="5" placeholder="Write your post..." style="margin-top: 8px;"></textarea>
+          <div style="margin-top: 12px; display: flex; justify-content: flex-end;">
+            <button class="editor-btn editor-btn--primary">Post</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div><!-- /col -->
+</div><!-- /row -->
+</div><!-- /dt-layout -->
+</main>
+
+<script>
+  function toggleTheme(btn) {
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light'
+    if (isLight) {
+      document.documentElement.removeAttribute('data-theme')
+      btn.querySelector('i').classList.replace('bi-moon', 'bi-sun')
+    } else {
+      document.documentElement.setAttribute('data-theme', 'light')
+      btn.querySelector('i').classList.replace('bi-sun', 'bi-moon')
+    }
+  }
+</script>
+</body>
+</html>

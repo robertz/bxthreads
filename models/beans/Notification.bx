@@ -1,0 +1,197 @@
+/**
+ * Handles creation and retrieval of in-app notifications.
+ *
+ * Notifications are generated when another user comments on a post or replies
+ * to a comment. Each notification has a `type` ("comment_on_post" or
+ * "reply_to_comment"), an `actor_id` (the user who triggered it), and optional
+ * references to the related `posts_id` and `comments_id`.
+ *
+ * This bean is not a traditional entity loader — it has no `getById()` or
+ * `save()` methods. All operations take `usersId` as an explicit argument
+ * rather than relying on loaded state.
+ *
+ * @property {string}  id          - UUID of the notification
+ * @property {string}  users_id    - UUID of the user being notified
+ * @property {string}  actor_id    - UUID of the user who triggered the notification
+ * @property {string}  posts_id    - UUID of the related post (may be empty)
+ * @property {string}  comments_id - UUID of the related comment (may be empty)
+ * @property {string}  type        - Notification type: "comment_on_post", "reply_to_comment", or "upvote_post"
+ * @property {numeric} is_read     - 0 = unread, 1 = read
+ * @property {numeric} created_utc - Creation time as UNIX timestamp
+ */
+class accessors="true" {
+
+	property name="id";
+	property name="users_id";
+	property name="actor_id";
+	property name="posts_id";
+	property name="comments_id";
+	property name="type";
+	property name="is_read";
+	property name="created_utc";
+
+	/**
+	 * Initializes the bean with empty/default values.
+	 * Called automatically by AppContext's scanDirectory() on instantiation.
+	 *
+	 * @return {Notification} This instance.
+	 */
+	function init(){
+		variables.id          = "";
+		variables.users_id    = "";
+		variables.actor_id    = "";
+		variables.posts_id    = "";
+		variables.comments_id = "";
+		variables.type        = "";
+		variables.is_read     = 0;
+		variables.created_utc = "";
+		return this;
+	}
+
+	/**
+	 * Inserts a new notification row.
+	 * Errors are caught and logged silently so a notification failure never
+	 * interrupts the action that triggered it.
+	 *
+	 * @param {string}  usersId      - UUID of the user to notify.
+	 * @param {string}  actorId      - UUID of the user who triggered the notification.
+	 * @param {string}  postsId      - UUID of the related post (optional).
+	 * @param {string}  commentsId   - UUID of the related comment (optional).
+	 * @param {string}  notifType    - Notification type: "comment_on_post", "reply_to_comment", or "upvote_post".
+	 * @param {numeric} upvoteCount  - For "upvote_post": the milestone upvote count stored as JSON meta. Pass 0 (default) for all other types.
+	 * @return {Notification} This instance (for method chaining).
+	 */
+	function create(
+		required string  usersId,
+		required string  actorId,
+		string           postsId      = "",
+		string           commentsId   = "",
+		required string  notifType,
+		numeric          upvoteCount  = 0
+	){
+		try {
+			var hasMeta = arguments.upvoteCount > 0;
+			var sql = "
+				INSERT INTO Notifications (users_id, actor_id, posts_id, comments_id, type, meta)
+				VALUES (
+					UUID_TO_BIN(:users_id),
+					UUID_TO_BIN(:actor_id),
+					UUID_TO_BIN(:posts_id),
+					UUID_TO_BIN(:comments_id),
+					:type,
+					#hasMeta ? 'JSON_OBJECT(''count'', :upvote_count)' : 'NULL'#
+				)
+			";
+			var qParams = {
+				"users_id"    : { value: arguments.usersId,    cfsqltype: "cf_sql_varchar" },
+				"actor_id"    : { value: arguments.actorId,    cfsqltype: "cf_sql_varchar" },
+				"posts_id"    : { value: arguments.postsId,    cfsqltype: "cf_sql_varchar", null: !len(arguments.postsId) },
+				"comments_id" : { value: arguments.commentsId, cfsqltype: "cf_sql_varchar", null: !len(arguments.commentsId) },
+				"type"        : { value: arguments.notifType,  cfsqltype: "cf_sql_varchar" }
+			};
+			if ( hasMeta ) {
+				qParams[ "upvote_count" ] = { value: arguments.upvoteCount, cfsqltype: "cf_sql_integer" };
+			}
+			queryExecute( sql, qParams );
+			var userShort = left( arguments.usersId, 8 );
+			cache( "dismalCache" ).clear( "notif:#userShort#:unread" );
+			cache( "dismalCache" ).clear( "notif:#userShort#:recent" );
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).error( "Error creating notification: " & e.message & " " & e.detail );
+		}
+		return this;
+	}
+
+	/**
+	 * Returns the count of unread notifications for a user.
+	 *
+	 * @param {string} usersId - UUID of the user.
+	 * @return {numeric} Number of unread notifications, or 0 on empty result.
+	 */
+	function getUnreadCount( required string usersId ){
+		var uid       = arguments.usersId;
+		var userShort = left( uid, 8 );
+		return cache( "dismalCache" ).getOrSet(
+			"notif:#userShort#:unread",
+			() => {
+				var sql = "
+					SELECT COUNT(*) AS cnt
+					FROM Notifications
+					WHERE users_id = UUID_TO_BIN(:users_id) AND is_read = 0
+				";
+				var qParams = {
+					"users_id": { value: uid, cfsqltype: "cf_sql_varchar" }
+				};
+				var res = queryExecute( sql, qParams, { returnType: "array" } );
+				return res.len() ? res[ 1 ].cnt : 0;
+			}
+		);
+	}
+
+	/**
+	 * Returns the 15 most recent notifications for a user (read and unread),
+	 * joined with actor, post, and forum data for display.
+	 *
+	 * @param {string} usersId - UUID of the user.
+	 * @return {array} Array of notification structs: id, type, is_read, created_utc,
+	 *                 actor_name, post_title, post_id_short, forum_display.
+	 */
+	function getRecent( required string usersId ){
+		var uid       = arguments.usersId;
+		var userShort = left( uid, 8 );
+		return cache( "dismalCache" ).getOrSet(
+			"notif:#userShort#:recent",
+			() => {
+				var sql = "
+					SELECT
+						BIN_TO_UUID(n.id)            AS id,
+						n.type,
+						n.is_read,
+						UNIX_TIMESTAMP(n.created_at) AS created_utc,
+						n.meta -> '$.count'          AS upvote_count,
+						n.meta ->> '$.slug'          AS achievement_slug,
+						n.meta -> '$.tier'           AS achievement_tier,
+						n.meta ->> '$.title'         AS achievement_title,
+						u.user_name                  AS actor_name,
+						p.title                      AS post_title,
+						p.id_short                   AS post_id_short,
+						f.display                    AS forum_display
+					FROM Notifications n
+					JOIN Users u ON u.id = n.actor_id
+					LEFT JOIN Posts p ON p.id = n.posts_id
+					LEFT JOIN Forums f ON f.id = p.forums_id
+					WHERE n.users_id = UUID_TO_BIN(:users_id)
+					ORDER BY n.created_at DESC
+					LIMIT 15
+				";
+				var qParams = {
+					"users_id": { value: uid, cfsqltype: "cf_sql_varchar" }
+				};
+				return queryExecute( sql, qParams, { returnType: "array" } );
+			}
+		);
+	}
+
+	/**
+	 * Marks all unread notifications as read for a user.
+	 *
+	 * @param {string} usersId - UUID of the user.
+	 * @return {Notification} This instance (for method chaining).
+	 */
+	function markAllRead( required string usersId ){
+		var sql = "
+			UPDATE Notifications
+			SET is_read = 1
+			WHERE users_id = UUID_TO_BIN(:users_id) AND is_read = 0
+		";
+		var qParams = {
+			"users_id": { value: arguments.usersId, cfsqltype: "cf_sql_varchar" }
+		};
+		queryExecute( sql, qParams );
+		var userShort = left( arguments.usersId, 8 );
+		cache( "dismalCache" ).clear( "notif:#userShort#:unread" );
+		cache( "dismalCache" ).clear( "notif:#userShort#:recent" );
+		return this;
+	}
+
+}

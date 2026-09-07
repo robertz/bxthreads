@@ -1,0 +1,291 @@
+/**
+ * bxThreads first-run setup.
+ *
+ * Run with: boxlang setup.bxs
+ *
+ * 1. Installs every box.json dependency into ./boxlang_modules via the BVM
+ *    `install-bx-module ... --local` CLI (not `box install` — this project's
+ *    modules are already managed that way, see box.json's shortDescription).
+ * 2. Prompts for every value in .env.example and writes ./.env (re-running
+ *    this script reuses whatever is already in .env as the new defaults).
+ * 3. If the configured database doesn't exist yet on the configured server,
+ *    creates it from db/schema.sql and seeds an admin:admin login
+ *    (RENEGADE_ADMIN permission). Skipped entirely if the database already
+ *    exists — this step never touches an existing database.
+ */
+
+projectRoot = expandPath( "./" );
+
+println( "" );
+println( "==================================================" );
+println( " bxThreads setup" );
+println( "==================================================" );
+println( "" );
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+function promptWithDefault( required string label, string defaultValue = "" ) {
+	var suffix = len( arguments.defaultValue ) ? " [" & arguments.defaultValue & "]" : "";
+	var answer = trim( cliRead( arguments.label & suffix & ": " ) );
+	return len( answer ) ? answer : arguments.defaultValue;
+}
+
+/**
+ * Minimal KEY=VALUE parser for an existing .env — lines starting with "#" or
+ * blank lines are skipped. Used so re-running this script defaults every
+ * prompt to whatever is already configured instead of .env.example's values.
+ */
+function readExistingEnv( required string path ) {
+	var result = {};
+	if ( !fileExists( arguments.path ) ) return result;
+	for ( var line in listToArray( fileRead( arguments.path ), char( 10 ) & char( 13 ), false ) ) {
+		var trimmed = trim( line );
+		if ( !len( trimmed ) || left( trimmed, 1 ) == "##" || !find( "=", trimmed ) ) continue;
+		var key = trim( left( trimmed, find( "=", trimmed ) - 1 ) );
+		var val = trim( mid( trimmed, find( "=", trimmed ) + 1, len( trimmed ) ) );
+		result[ key ] = val;
+	}
+	return result;
+}
+
+/**
+ * Installs one BoxLang module locally unless it's already on disk. Wraps
+ * systemExecute() so a missing `install-bx-module` binary (BVM not on PATH)
+ * fails once with a clear message instead of a raw stack trace per module.
+ */
+function installDependency( required string moduleName, required string root ) {
+	var destination = arguments.root & "boxlang_modules/" & lCase( arguments.moduleName );
+	if ( directoryExists( destination ) ) {
+		println( "  " & arguments.moduleName & " — already installed, skipping" );
+		return true;
+	}
+	println( "  " & arguments.moduleName & " — installing..." );
+	try {
+		var result = systemExecute(
+			name: "install-bx-module",
+			arguments: [ arguments.moduleName, "--local" ],
+			directory: arguments.root,
+			timeout: 300000
+		);
+		if ( result.exitCode != 0 ) {
+			println( "  " & arguments.moduleName & " — FAILED (exit " & result.exitCode & "): " & trim( result.output & " " & result.error ) );
+			return false;
+		}
+		println( "  " & arguments.moduleName & " — installed" );
+		return true;
+	} catch ( any e ) {
+		println( "  " & arguments.moduleName & " — FAILED: " & e.message );
+		println( "  (is BVM's install-bx-module on your PATH? see https://boxlang.io)" );
+		return false;
+	}
+}
+
+/**
+ * Runs the `mysql` CLI with the given extra arguments appended after the
+ * shared connection flags. Password is passed via --password=... (omitted
+ * entirely when blank, matching local-root-with-no-password setups) rather
+ * than bare -p, which would otherwise force an interactive prompt.
+ */
+function runMysql( required struct db, required array extraArgs, numeric timeout = 30000 ) {
+	var baseArgs = [ "-h", arguments.db.DB_HOST, "-P", arguments.db.DB_PORT, "-u", arguments.db.DB_USER, "--default-character-set=utf8mb4" ];
+	if ( len( arguments.db.DB_PASSWORD ) ) {
+		baseArgs.append( "--password=" & arguments.db.DB_PASSWORD );
+	}
+	baseArgs.addAll( arguments.extraArgs );
+	return systemExecute( name: "mysql", arguments: baseArgs, timeout: arguments.timeout );
+}
+
+/**
+ * BCryptHash() lives in bx-password-encrypt, which may have just been
+ * installed by Step 1 above — this same running process booted before that
+ * module existed on disk, so it can't see it. Spawning a fresh `boxlang`
+ * subprocess (with the project's own boxlang.json, so it discovers the local
+ * boxlang_modules/) sidesteps that entirely.
+ */
+function hashAdminPassword( required string root ) {
+	var helperPath = createTempFile( getTempDirectory(), "bxsetup", ".bxs" );
+	fileWrite( helperPath, "println( BCryptHash( ""admin"" ) )" );
+	try {
+		var result = systemExecute(
+			name: "boxlang",
+			arguments: [ "--bx-config", arguments.root & "boxlang.json", helperPath ],
+			directory: arguments.root,
+			timeout: 30000
+		);
+		if ( result.exitCode != 0 || !len( trim( result.output ) ) ) {
+			throw( message: "Could not hash the admin password: " & trim( result.output & " " & result.error ) );
+		}
+		return trim( result.output );
+	} finally {
+		fileDelete( helperPath );
+	}
+}
+
+// =============================================================================
+// Step 1 — dependencies
+// =============================================================================
+
+println( "── Installing dependencies (install-bx-module --local) ──" );
+boxJson       = jsonDeserialize( fileRead( projectRoot & "box.json" ) );
+failedModules = [];
+for ( moduleName in boxJson.dependencies ) {
+	if ( !installDependency( moduleName, projectRoot ) ) {
+		failedModules.append( moduleName );
+	}
+}
+println( "" );
+
+// =============================================================================
+// Step 2 — environment values
+// =============================================================================
+
+println( "── Configuring .env ──" );
+envPath     = projectRoot & ".env";
+existingEnv = readExistingEnv( envPath );
+if ( !existingEnv.isEmpty() ) {
+	println( "(found an existing .env — press Enter on any prompt to keep its current value)" );
+}
+println( "" );
+
+answers = {};
+
+function ask( required string key, required string label, string fallback = "" ) {
+	var defaultValue = existingEnv.keyExists( arguments.key ) ? existingEnv[ arguments.key ] : arguments.fallback;
+	answers[ arguments.key ] = promptWithDefault( arguments.label, defaultValue );
+}
+
+println( "Server:" );
+ask( "APP_PORT", "  Port", "3000" );
+ask( "APP_ENV", "  Environment (development/production)", "development" );
+println( "" );
+
+println( "Public site:" );
+ask( "SITE_URL", "  Site URL", "http://localhost:" & answers.APP_PORT );
+ask( "SITE_NAME", "  Site name", "bxThreads" );
+println( "" );
+
+println( "Admin API (sent as the X-Api-Key header on /api/* routes):" );
+ask( "API_KEY", "  API key", existingEnv.keyExists( "API_KEY" ) && len( existingEnv.API_KEY ) ? existingEnv.API_KEY : lCase( createGUID() ) );
+println( "" );
+
+println( "MySQL datasource:" );
+ask( "DB_HOST", "  Host", "127.0.0.1" );
+ask( "DB_PORT", "  Port", "3306" );
+while ( true ) {
+	ask( "DB_DATABASE", "  Database name", "dismal" );
+	if ( reFind( "^[A-Za-z0-9_]+$", answers.DB_DATABASE ) ) break;
+	println( "  Database name may only contain letters, numbers, and underscores." );
+	structDelete( existingEnv, "DB_DATABASE" ); // don't re-offer the invalid value as the default
+}
+ask( "DB_USER", "  User", "root" );
+ask( "DB_PASSWORD", "  Password (blank for none)", "" );
+println( "" );
+
+envContent = [
+	"## Generated by setup.bxs on " & dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ) & ". .env is gitignored — never commit it.",
+	"",
+	"## --- Server -------------------------------------------------------------",
+	"APP_PORT=" & answers.APP_PORT,
+	"APP_ENV=" & answers.APP_ENV,
+	"",
+	"## Public site URL — used for canonical links, OG tags, sitemap generation.",
+	"SITE_URL=" & answers.SITE_URL,
+	"SITE_NAME=" & answers.SITE_NAME,
+	"",
+	"## --- Admin API ------------------------------------------------------------",
+	"## Required by the /api/* admin endpoints (sent as the X-Api-Key header).",
+	"API_KEY=" & answers.API_KEY,
+	"",
+	"## --- MySQL datasource (""dismal"" in boxlang.json) -------------------------",
+	"DB_HOST=" & answers.DB_HOST,
+	"DB_PORT=" & answers.DB_PORT,
+	"DB_DATABASE=" & answers.DB_DATABASE,
+	"DB_USER=" & answers.DB_USER,
+	"DB_PASSWORD=" & answers.DB_PASSWORD
+].toList( char( 10 ) );
+
+fileWrite( envPath, envContent );
+println( "Wrote " & envPath );
+println( "" );
+
+// =============================================================================
+// Step 3 — database schema + admin user
+// =============================================================================
+
+println( "── Database ──" );
+
+dbSettings = {
+	DB_HOST: answers.DB_HOST, DB_PORT: answers.DB_PORT,
+	DB_USER: answers.DB_USER, DB_PASSWORD: answers.DB_PASSWORD
+};
+
+try {
+	existsCheck = runMysql(
+		dbSettings,
+		[ "-N", "-e", "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '" & answers.DB_DATABASE & "'" ]
+	);
+	if ( existsCheck.exitCode != 0 ) {
+		throw( message: "Could not connect to MySQL at " & answers.DB_HOST & ":" & answers.DB_PORT & " as " & answers.DB_USER & " — " & trim( existsCheck.error ) );
+	}
+
+	if ( trim( existsCheck.output ) == answers.DB_DATABASE ) {
+		println( "Database '" & answers.DB_DATABASE & "' already exists on " & answers.DB_HOST & ":" & answers.DB_PORT & " — leaving it as-is." );
+	} else {
+		proceed = promptWithDefault(
+			"Database '" & answers.DB_DATABASE & "' was not found on " & answers.DB_HOST & ":" & answers.DB_PORT & ". Create it and seed admin:admin now? [Y/n]",
+			"Y"
+		);
+		if ( !reFindNoCase( "^y", proceed ) ) {
+			println( "Skipped. Apply db/schema.sql manually whenever you're ready." );
+		} else {
+			println( "Creating schema..." );
+			schemaSql    = replace( fileRead( projectRoot & "db/schema.sql" ), "`dismal`", "`" & answers.DB_DATABASE & "`", "all" );
+			schemaResult = runMysql( dbSettings, [ "-e", schemaSql ], 120000 );
+			if ( schemaResult.exitCode != 0 ) {
+				throw( message: "Schema creation failed: " & trim( schemaResult.error ) );
+			}
+			println( "Schema created." );
+
+			println( "Creating admin user..." );
+			passwordHash = hashAdminPassword( projectRoot );
+			adminId      = lCase( createGUID() );
+			permissionId = lCase( createGUID() );
+			adminSql = "
+				INSERT INTO `Users` (`id`, `email`, `user_name`, `password`)
+				VALUES (UUID_TO_BIN('" & adminId & "'), 'admin@localhost', 'admin', '" & replace( passwordHash, "'", "''", "all" ) & "');
+				INSERT IGNORE INTO `Permissions` (`id`, `permission`)
+				VALUES (UUID_TO_BIN('" & permissionId & "'), 'RENEGADE_ADMIN');
+				INSERT IGNORE INTO `UsersPermissions` (`users_id`, `permissions_id`)
+				VALUES (UUID_TO_BIN('" & adminId & "'), (SELECT id FROM `Permissions` WHERE permission = 'RENEGADE_ADMIN'));
+			";
+			adminResult = runMysql( dbSettings, [ answers.DB_DATABASE, "-e", adminSql ] );
+			if ( adminResult.exitCode != 0 ) {
+				throw( message: "Admin user creation failed: " & trim( adminResult.error ) );
+			}
+			println( "Admin user created — log in with username 'admin', password 'admin'. Change that password after your first login." );
+		}
+	}
+} catch ( any e ) {
+	println( "" );
+	println( "Database step failed: " & e.message );
+	println( "(is the 'mysql' CLI client installed and on your PATH?)" );
+}
+
+// =============================================================================
+// Done
+// =============================================================================
+
+println( "" );
+println( "==================================================" );
+if ( failedModules.len() ) {
+	println( " Setup finished with problems installing: " & failedModules.toList( ", " ) );
+} else {
+	println( " Setup complete." );
+}
+println( "==================================================" );
+println( "" );
+println( "Start the app with:" );
+println( "  boxlang --bx-config ./boxlang.json app.bxs" );
+println( "" );

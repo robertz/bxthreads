@@ -1,0 +1,47 @@
+<bx:output>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-2 order-1 order-lg-2">
+			#view( "user/header" )#
+
+			<bx:script>
+				// Not a #view(...)# partial — needs the loop's own `post` struct, which a
+				// nested include can't see (only the data closed over at renderToString()'s
+				// own scope). Source app used a per-item wire component (feed.item) that
+				// independently loaded the full Post + vote score by id_short; this replicates
+				// that same independent lookup, then hands the row to the shared
+				// FeedItemRenderer so this page renders the exact same real card the main feed
+				// does instead of its own separate (and previously unstyled) markup.
+				function renderUserPostCard( required string idShort, required string viewerId ) {
+					var p = new "models.beans.Post"().getByIdShort( arguments.idShort );
+					if ( !p.hasLoaded() ) return "";
+					var row = p.getMemento();
+					row[ "forum" ]         = p.getDisplay();
+					row[ "vote_score" ]    = new "models.beans.Vote"().getScore( p.getId() );
+					row[ "comment_count" ] = p.getComments();
+					row[ "view_count" ]    = p.getViewCount();
+					row[ "link_url" ]         = row.link_data.url ?: "";
+					row[ "link_description" ] = row.link_data.description ?: "";
+					row[ "link_image" ]        = row.link_data.image ?: "";
+					row[ "is_bookmarked" ] = len( arguments.viewerId ) ? new "models.beans.Bookmark"().isBookmarked( arguments.viewerId, p.getId() ) : false;
+					return new "lib.FeedItemRenderer"().renderCard( row, arguments.viewerId );
+				}
+			</bx:script>
+
+			<bx:set viewerId = data.isIdentified ? data.currentUser.id : "">
+			<bx:if !data.postsByUser.len()>
+				<p class="text-muted">No posts yet.</p>
+			</bx:if>
+			<bx:loop array="#data.postsByUser#" index="post">
+				#renderUserPostCard( post.id_short, viewerId )#
+			</bx:loop>
+		</div>
+		<div class="d-none d-lg-block col-lg-3 p-2 order-lg-3">
+			#view( "widgets/user_profile" )#
+		</div>
+	</div>
+</div>
+</bx:output>

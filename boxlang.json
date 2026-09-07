@@ -1,0 +1,36 @@
+{
+	"datasources": {
+		"dismal": {
+			"driver": "mysql",
+			"host": "${env.DB_HOST:127.0.0.1}",
+			"port": "${env.DB_PORT:3306}",
+			"database": "${env.DB_DATABASE:dismal}",
+			"username": "${env.DB_USER:root}",
+			"password": "${env.DB_PASSWORD}",
+			"custom": "allowPublicKeyRetrieval=true&useSSL=false"
+		}
+	},
+	"defaultDatasource": "dismal",
+	"mappings": {
+		"/lib": "${user-dir}/lib",
+		"/models": "${user-dir}/models",
+		"/views": "${user-dir}/views",
+		"/tests": "${user-dir}/tests",
+		"/testbox": "${user-dir}/testbox"
+	},
+	"caches": {
+		"dismalCache": {
+			"enabled": true,
+			"provider": "BoxCacheProvider",
+			"properties": {
+				"objectStore": "ConcurrentSoftReferenceStore",
+				"maxObjects": 10000,
+				"evictionPolicy": "LRU",
+				"evictCount": 500,
+				"defaultTimeout": 3600,
+				"defaultLastAccessTimeout": 1800,
+				"reapFrequency": 300
+			}
+		}
+	}
+}

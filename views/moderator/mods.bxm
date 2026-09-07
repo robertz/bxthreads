@@ -1,0 +1,42 @@
+<bx:output>
+<div class="mod-wrap">
+	#view("widgets/mod_nav")#
+
+	<div id="mod-mods-alert"></div>
+
+	<div class="row">
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Moderator Management</h2>
+
+					<div class="mod-bots__form-row">
+						<select class="mod-bots__select" data-mods-forum-select>
+							<option value="">Select a forum…</option>
+							<bx:loop array="#data.forums#" index="f">
+								<option value="#encodeForHTMLAttribute( f.display )#">f/#encodeForHTML( f.display )#</option>
+							</bx:loop>
+						</select>
+					</div>
+
+					<form data-add-mod-form class="mod-bots__form-row" style="display:none;">
+						<input type="text" name="username" class="mod-bots__input" placeholder="Username" required>
+						<button type="submit" class="mod-bots__btn">Add Moderator</button>
+					</form>
+					<p data-mod-status class="mb-2"></p>
+
+					<table class="mod-table" data-mods-table style="display:none;">
+						<thead>
+							<tr>
+								<th>Moderator</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody data-dash-mods-tbody></tbody>
+					</table>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

@@ -1,0 +1,58 @@
+/**
+ * Boot-time service registry — replaces WireBox for this app.
+ * The source app's DI is convention-based (config/WireBox.bx scans models.beans/dao/services
+ * with no explicit binder map, and every registered class has a zero-arg init()), so a flat
+ * name-keyed registry populated at boot covers the whole graph. Backed by a `static` scope so
+ * every `new "lib.AppContext"()` anywhere in the app shares the same underlying registry.
+ */
+class {
+
+	static {
+		static.registry = {};
+	}
+
+	/**
+	 * Register an already-constructed instance under a name (used for lib/ singletons that need
+	 * constructor args — Config, Logger, Populate, QB — which scanDirectory() can't build).
+	 */
+	function register( required string name, required any instance ) {
+		static.registry[ arguments.name ] = arguments.instance;
+		return this;
+	}
+
+	/**
+	 * Non-recursive scan of a directory for *.bx files; registers one instance per file, keyed
+	 * by filename (no extension), calling init() if the class declares one — mirrors WireBox's
+	 * scanLocations convention. `dottedPackage` must resolve via a boxlang.json mapping (e.g.
+	 * "models.beans" via the /models mapping) since createObject() resolves dotted paths against
+	 * mappings, not relative to the caller.
+	 */
+	function scanDirectory( required string diskPath, required string dottedPackage ) {
+		if ( !directoryExists( arguments.diskPath ) ) {
+			return this;
+		}
+		var files = directoryList( path = arguments.diskPath, recurse = false, listInfo = "name", filter = "*.bx" );
+		for ( var fileName in files ) {
+			var className  = left( fileName, len( fileName ) - 3 );
+			var dottedPath = arguments.dottedPackage & "." & className;
+			var instance   = createObject( "component", dottedPath );
+			if ( structKeyExists( instance, "init" ) ) {
+				instance = instance.init();
+			}
+			register( className, instance );
+		}
+		return this;
+	}
+
+	function get( required string name ) {
+		if ( !static.registry.keyExists( arguments.name ) ) {
+			throw( message = "AppContext: no component registered for '#arguments.name#'", type = "AppContext.NotFound" );
+		}
+		return static.registry[ arguments.name ];
+	}
+
+	function has( required string name ) {
+		return static.registry.keyExists( arguments.name );
+	}
+
+}

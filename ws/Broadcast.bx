@@ -1,0 +1,38 @@
+/**
+ * Thin wrapper over the shared Stomp instance's send() — mutation call sites (ActionsRouter.bx)
+ * call one of these rather than constructing destination strings or touching Stomp directly.
+ * Fire-and-forget: broadcasting can never fail the mutation it's reporting on, so every send is
+ * wrapped and swallowed (logged only) — mirrors the source app's BroadcastService.bx exactly.
+ */
+class {
+
+	function init( required any stomp ) {
+		variables.stomp = arguments.stomp;
+		return this;
+	}
+
+	function commentAdded( required string postIdShort ) {
+		_send( "post." & arguments.postIdShort, { event: "comment-added" } );
+	}
+
+	function commentVoteChanged( required string postIdShort ) {
+		_send( "post." & arguments.postIdShort, { event: "comment-vote-changed" } );
+	}
+
+	function postVoteChanged( required string postIdShort ) {
+		_send( "post." & arguments.postIdShort, { event: "post-vote-changed" } );
+	}
+
+	function notificationReceived( required string usersId ) {
+		_send( "user." & arguments.usersId, { event: "notification-received" } );
+	}
+
+	private function _send( required string destination, required struct data ) {
+		try {
+			variables.stomp.send( arguments.destination, arguments.data );
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).warn( "Broadcast to #arguments.destination# failed: #e.message#" );
+		}
+	}
+
+}

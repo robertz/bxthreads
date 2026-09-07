@@ -1,0 +1,67 @@
+<bx:output>
+<div class="mod-wrap">
+	#view("widgets/mod_nav")#
+	<div class="row">
+		<div class="col-12 col-lg-6 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Top Viewed Posts</h2>
+					<bx:if !data.topViewed.len()>
+						<p class="mod-table__muted mb-0">No view data yet.</p>
+					<bx:else>
+						<table class="mod-table">
+							<thead>
+								<tr>
+									<th>Title</th>
+									<th>Forum</th>
+									<th>Views</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#data.topViewed#" index="p">
+									<tr>
+										<td>
+											<a href="/f/#encodeForURL( p.forum )#/comments/#encodeForURL( p.id_short )#/#encodeForURL( slugifyText( p.title ) )#" class="post-link text-decoration-none">#encodeForHTML( p.title )#</a>
+										</td>
+										<td class="mod-table__nowrap">f/#encodeForHTML( p.forum )#</td>
+										<td class="mod-table__nowrap">#encodeForHTML( p.view_count ?: 0 )#</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+		<div class="col-12 col-lg-6 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Recently Deleted Posts</h2>
+					<bx:if !data.recentlyDeleted.len()>
+						<p class="mod-table__muted mb-0">No recently deleted posts.</p>
+					<bx:else>
+						<table class="mod-table">
+							<thead>
+								<tr>
+									<th>Title</th>
+									<th>Forum</th>
+									<th>Deleted</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#data.recentlyDeleted#" index="p">
+									<tr class="mod-table__row--deleted">
+										<td class="mod-table__muted">#encodeForHTML( p.title )#</td>
+										<td class="mod-table__nowrap">f/#encodeForHTML( p.forum )#</td>
+										<td class="mod-table__nowrap">#momentFrom( p.updated_at )#</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

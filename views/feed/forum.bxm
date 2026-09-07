@@ -1,0 +1,59 @@
+<bx:output>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-2 order-1 order-lg-2">
+
+			<bx:if data.keyExists("forum") && isStruct( data.forum ) && structKeyExists( data.forum, "display" )>
+				<div class="mb-3" style="display:flex; align-items:center; gap:12px;" data-forum-presence-scope data-forum-id-short="#encodeForHTMLAttribute( data.forum.id_short )#">
+					<bx:if len( data.forum.about ?: "" )>
+						<span style="color: var(--text-muted); font-size: 0.9rem;">#encodeForHTML( data.forum.about )#</span>
+					</bx:if>
+					<bx:if data.isIdentified>
+						<!--- Desktop shows this same control in the sidebar (widgets/forum_details.bxm)
+						      instead — kept here too, mobile-only, since that sidebar column is
+						      d-none d-lg-block and doesn't render at all on small screens. --->
+						<bx:set isSubscribed = data.subscribedForumIds.keyExists( data.forum.id_short )>
+						<button type="button" class="c-forum__cta d-lg-none #isSubscribed ? 'c-forum__cta--subscribed' : ''#" data-subscribe-toggle data-forum="#encodeForHTMLAttribute( data.forum.display )#">
+							#isSubscribed ? "Unsubscribe" : "Subscribe"#
+						</button>
+					</bx:if>
+					<span style="color: var(--text-muted); font-size: 0.85rem;" data-forum-presence-count>#encodeForHTML( data.forumPresenceCount ?: 1 )# viewing now</span>
+				</div>
+			</bx:if>
+
+			<bx:if !data.feed.len()>
+				<p class="text-muted">Nothing posted here yet.</p>
+			</bx:if>
+			<div data-feed-list>
+				<bx:loop array="#data.feed#" index="post">
+					#new "lib.FeedItemRenderer"().renderCard( post, data.isIdentified ? data.currentUser.id : "", data.isIdentified && ( data.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) || data.currentUser.permissions.listFind( "FORUM_MODERATOR_" & uCase( post.forum ) ) ) )#
+				</bx:loop>
+			</div>
+			<bx:if data.feed.len() GTE 50>
+				<div
+					data-feed-sentinel
+					data-feed-forum="#encodeForHTMLAttribute( data.keyExists('forum') && isStruct(data.forum) && structKeyExists(data.forum,'display') ? data.forum.display : 'all' )#"
+					data-feed-before="#encodeForHTMLAttribute( data.feed[ data.feed.len() ].created_utc )#"
+					style="height:1px;"
+				></div>
+			</bx:if>
+			<div id="feed-end" class="feed-end" data-feed-end style="#data.feed.len() >= 50 ? 'display:none;' : ''#">
+				<span class="feed-end__text">&mdash;&nbsp;end of feed&nbsp;&mdash;</span>
+			</div>
+			<div class="feed-loader" data-feed-loader style="display:none;">
+				<div class="feed-loader__spinner"></div>
+			</div>
+		</div>
+		<div class="d-none d-lg-block col-lg-3 p-2 order-lg-3">
+			<bx:if data.keyExists( "forum" ) && isStruct( data.forum ) && structKeyExists( data.forum, "display" )>
+				#view( "widgets/forum_details" )#
+			<bx:else>
+				#view( "widgets/recently_viewed" )#
+			</bx:if>
+		</div>
+	</div>
+</div>
+</bx:output>

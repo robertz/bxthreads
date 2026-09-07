@@ -1,0 +1,735 @@
+/**
+ * Page routes — ports handlers/Main.bx + handlers/AppRouter.bx (config/Router.bx's route table)
+ * onto a boxExpressRouter(). /api/* is Phase 4, not here.
+ *
+ * Rendering: every route calls View.renderPage(app, res, viewName, extraData) instead of
+ * ColdBox's event.setView() — see lib/View.bx for why (boxlang-express has no built-in layout
+ * composition). `extraData` merges over res.locals (already populated by RequestContext for
+ * this request) inside the view/layout.
+ *
+ * Wire-component embeds from the source app (feed lists, comment trees, the post editor, the
+ * notification bell, the user menu) render as plain, non-interactive, DAO/bean-backed HTML in
+ * the ported views for now — Phase 5 replaces those specific fragments with real interactivity
+ * (REST actions + STOMP push), not the page routing itself, which is already complete here.
+ *
+ * Route handlers are plain (non-private) methods, not closures nested inside register() —
+ * boxlang-express invokes them from outside this class, and a `private` method (or a closure
+ * defined inside another method) isn't reachable from a call arriving that way.
+ */
+class {
+
+	function register( required any app, required any router ) {
+		variables.app        = arguments.app;
+		variables.AppContext = new "lib.AppContext"();
+		variables.View       = variables.AppContext.get( "View" );
+		variables.Session    = variables.AppContext.get( "Session" );
+
+		var r = arguments.router;
+
+		// ── Main.bx equivalents ────────────────────────────────────────────────
+		r.get( "/", ( req, res ) => indexRoute( req, res ) );
+		r.post( "/logout", ( req, res ) => logoutRoute( req, res ) );
+		r.get( "/login", ( req, res ) => res.redirect( "/" ) );
+		r.post( "/login", ( req, res ) => loginRoute( req, res ) );
+		r.post( "/signup", ( req, res ) => signupRoute( req, res ) );
+		r.get( "/404", ( req, res ) => notFoundRoute( req, res ) );
+		r.get( "/sitemap.xml", ( req, res ) => sitemapRoute( req, res ) );
+
+		// ── AppRouter.bx equivalents ───────────────────────────────────────────
+		r.get( "/search", ( req, res ) => searchRoute( req, res ) );
+		r.get( "/home", ( req, res ) => homeRoute( req, res ) );
+		r.get( "/top-viewed", ( req, res ) => topViewedRoute( req, res ) );
+
+		r.get( "/f/:forum/comments/:id_short/:post_slug/comment/:comment_id_short", ( req, res ) => viewCommentRoute( req, res ) );
+		r.get( "/f/:forum/comments/:id_short/:post_slug", ( req, res ) => viewPostRoute( req, res ) );
+
+		r.get( "/f/:forum/submit", ( req, res ) => createPostFormRoute( req, res ) );
+		r.get( "/submit", ( req, res ) => createPostFormRoute( req, res ) );
+		r.post( "/f/:forum/submit", ( req, res ) => createPostSubmitRoute( req, res ) );
+		r.post( "/submit", ( req, res ) => createPostSubmitRoute( req, res ) );
+		// Only JSON route in this otherwise page-rendering router — wrapped so an uncaught
+		// exception returns this app's {success:false, error:"..."} shape, not a raw 500 HTML
+		// error page. See lib/JsonAction.bx.
+		r.get( "/submit/link-preview", variables.AppContext.get( "JsonAction" ).safeAction( variables.AppContext.get( "Logger" ), ( req, res ) => linkPreviewAction( req, res ) ) );
+
+		r.get( "/f/:forum/mod", ( req, res ) => forumModRoute( req, res ) );
+		r.get( "/f/:forum", ( req, res ) => forumIndexRoute( req, res ) );
+
+		r.get( "/settings", ( req, res ) => settingsRoute( req, res ) );
+
+		r.get( "/u/:user/achievements", ( req, res ) => userAchievementsRoute( req, res ) );
+		r.get( "/u/:user/comments", ( req, res ) => userCommentsRoute( req, res ) );
+		r.get( "/u/:user/bookmarks", ( req, res ) => userBookmarksRoute( req, res ) );
+		r.get( "/u/:user", ( req, res ) => userIndexRoute( req, res ) );
+
+		r.get( "/go/:link", ( req, res ) => goRoute( req, res ) );
+
+		// ── Moderator pages (thin shells — real data via /api/*, Phase 4) ──────
+		r.get( "/mod", ( req, res ) => modRoute( req, res, "activity" ) );
+		r.get( "/mod/activity", ( req, res ) => modRoute( req, res, "activity" ) );
+		r.get( "/mod/posts", ( req, res ) => modRoute( req, res, "posts" ) );
+		r.get( "/mod/forums", ( req, res ) => modRoute( req, res, "forums" ) );
+		r.get( "/mod/users", ( req, res ) => modRoute( req, res, "users" ) );
+		r.get( "/mod/mods", ( req, res ) => modRoute( req, res, "mods" ) );
+
+		// Everything else is a 404, matching the source app's `:handler/:action?` catch-all.
+		r.get( "/*", ( req, res ) => notFoundRoute( req, res ) );
+	}
+
+	// =========================================================================
+	// Main.bx equivalents
+	// =========================================================================
+
+	function indexRoute( req, res ) {
+		if ( arguments.res.locals.isIdentified ) {
+			arguments.res.redirect( "/home" );
+			return;
+		}
+		renderForumIndex( arguments.req, arguments.res, "all" );
+	}
+
+	function logoutRoute( req, res ) {
+		structDelete( arguments.req.session, "uid" );
+		arguments.res.redirect( "/" );
+	}
+
+	function loginRoute( req, res ) {
+		var userField = trim( arguments.req.body.user ?: "" );
+		var password  = arguments.req.body.password ?: "";
+
+		var user = new "models.beans.User"().getUserByNameOrEmail( userField );
+		if ( !user.hasLoaded() || !user.authenticate( password ) ) {
+			variables.Session.setFlash( arguments.req, { mode: "login", error: "Incorrect username/email or password.", username: userField } );
+			arguments.res.redirect( "/" );
+			return;
+		}
+
+		arguments.req.session.uid = user.getId();
+		variables.AppContext.get( "ActivityService" ).log( user.getId(), "login" );
+		arguments.res.redirect( "/home" );
+	}
+
+	function signupRoute( req, res ) {
+		var username = trim( arguments.req.body.username ?: "" );
+		var email    = trim( arguments.req.body.email ?: "" );
+		var password = arguments.req.body.password ?: "";
+
+		if ( !len( username ) || !len( email ) || len( password ) < 8 ) {
+			variables.Session.setFlash( arguments.req, { mode: "signup", error: "Fill in every field — password needs at least 8 characters.", username: username, email: email } );
+			arguments.res.redirect( "/" );
+			return;
+		}
+
+		var existingByName = new "models.beans.User"().getUserByNameOrEmail( username );
+		if ( existingByName.hasLoaded() ) {
+			variables.Session.setFlash( arguments.req, { mode: "signup", error: "That username is already taken.", username: username, email: email } );
+			arguments.res.redirect( "/" );
+			return;
+		}
+		var existingByEmail = new "models.beans.User"().getUserByNameOrEmail( email );
+		if ( existingByEmail.hasLoaded() ) {
+			variables.Session.setFlash( arguments.req, { mode: "signup", error: "That email is already registered.", username: username, email: email } );
+			arguments.res.redirect( "/" );
+			return;
+		}
+
+		var user = new "models.beans.User"();
+		user.setUser_name( username );
+		user.setEmail( email );
+		user.hashPassword( password ).save();
+
+		arguments.req.session.uid = user.getId();
+		variables.AppContext.get( "ActivityService" ).log( user.getId(), "signup" );
+		arguments.res.redirect( "/home" );
+	}
+
+	function notFoundRoute( req, res ) {
+		arguments.res.status( 404 );
+		variables.View.renderPage( variables.app, arguments.res, "main/missing", {} );
+	}
+
+	/**
+	 * Generates sitemap.xml on demand rather than reading a file written by a scheduled task —
+	 * the source ColdBox app's scheduler doesn't exist here. The built XML is cached for a few
+	 * minutes (SitemapService.generate() queries up to 5 000 posts) so repeated crawler hits don't
+	 * each rebuild it from scratch.
+	 */
+	function sitemapRoute( req, res ) {
+		var xml = cache( "dismalCache" ).getOrSet(
+			"sitemap:xml",
+			() => variables.AppContext.get( "SitemapService" ).generate(),
+			300
+		);
+		arguments.res.set( "Content-Type", "application/xml" );
+		arguments.res.send( xml );
+	}
+
+	// =========================================================================
+	// AppRouter.bx equivalents
+	// =========================================================================
+
+	function searchRoute( req, res ) {
+		var rawQuery   = trim( arguments.req.query.q ?: "" );
+		var forumScope = trim( arguments.req.query.forum ?: "" );
+
+		if ( !len( rawQuery ) ) {
+			arguments.res.redirect( "/" );
+			return;
+		}
+
+		var currentPerms  = arguments.res.locals.currentUser.permissions;
+		var subscribedIds = arguments.res.locals.subscribedForumIds;
+		var likeTerm      = "%" & rawQuery & "%";
+
+		var forumRows = queryExecute(
+			"SELECT id_short, display, about, icon, is_private
+			 FROM Forums
+			 WHERE deleted = 0 AND ( display LIKE :q OR about LIKE :q )
+			 ORDER BY display ASC LIMIT 10",
+			{ "q": { value: likeTerm, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+
+		var searchForums = forumRows.filter( ( f ) => {
+			return !f.is_private
+				|| currentPerms.listFind( "RENEGADE_ADMIN" )
+				|| subscribedIds.keyExists( f.id_short );
+		} );
+
+		var siteName = variables.AppContext.get( "Config" ).getSiteName();
+		arguments.res.locals.meta.title       = "Search: " & encodeForHTML( rawQuery ) & " — " & siteName;
+		arguments.res.locals.meta.description = "Search results for " & encodeForHTMLAttribute( rawQuery ) & " on " & siteName;
+
+		var pageSize = 20;
+		var filters = {
+			limit: pageSize + 1,
+			offset: 0,
+			matchQuery: rawQuery,
+			viewerId: arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "",
+			isAdmin: currentPerms.listFind( "RENEGADE_ADMIN" )
+		};
+		if ( len( forumScope ) ) filters.forum = forumScope;
+		var results = variables.AppContext.get( "DismalDAO" ).getPosts( filters );
+
+		var hasMore = results.len() > pageSize;
+		if ( hasMore ) {
+			var trimmed = [];
+			for ( var i = 1; i <= pageSize; i++ ) trimmed.append( results[ i ] );
+			results = trimmed;
+		}
+		decorateFeedWithUserState( results, arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "" );
+
+		variables.View.renderPage( variables.app, arguments.res, "search/results", {
+			searchQuery: rawQuery, searchForum: forumScope, searchForums: searchForums, feed: results, hasMore: hasMore
+		} );
+	}
+
+	function homeRoute( req, res ) {
+		if ( !arguments.res.locals.isIdentified ) {
+			arguments.res.redirect( "/f/all" );
+			return;
+		}
+		arguments.res.locals.isHome = true;
+		arguments.res.locals.jsData.h = "home";
+		renderForumIndex( arguments.req, arguments.res, "" );
+	}
+
+	function topViewedRoute( req, res ) {
+		var siteName = variables.AppContext.get( "Config" ).getSiteName();
+		arguments.res.locals.meta.title       = "Most Viewed Today — " & siteName;
+		arguments.res.locals.meta.description = "The most viewed posts on " & siteName & " in the last 24 hours.";
+		var pageSize = 20;
+		var feed = variables.AppContext.get( "DismalDAO" ).getTopViewedPosts( {
+			limit: pageSize,
+			viewerId: arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "",
+			isAdmin: arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+		} );
+		decorateFeedWithUserState( feed, arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "" );
+		variables.View.renderPage( variables.app, arguments.res, "feed/topviewed", { feed: feed, hasMore: feed.len() == pageSize } );
+	}
+
+	function viewCommentRoute( req, res ) {
+		arguments.res.locals.focusComment = arguments.req.params.comment_id_short;
+		viewPostRoute( arguments.req, arguments.res );
+	}
+
+	function viewPostRoute( req, res ) {
+		arguments.res.locals.forum   = arguments.req.params.forum;
+		arguments.res.locals.idShort = arguments.req.params.id_short;
+
+		var forum = new "models.beans.Forum"().getByName( arguments.req.params.forum, arguments.res.locals.currentUser.id );
+		var post  = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+
+		var canView = forum.hasLoaded() && post.hasLoaded()
+			&& ( !post.getDeleted() || arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) );
+
+		if ( !canView ) {
+			notFoundRoute( arguments.req, arguments.res );
+			return;
+		}
+		if (
+			forum.getIs_private()
+			&& !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+			&& !arguments.res.locals.subscribedForumIds.keyExists( forum.getId_short() )
+		) {
+			notFoundRoute( arguments.req, arguments.res );
+			return;
+		}
+		arguments.res.locals.forum = forum.getMemento();
+		arguments.res.locals.jsData.post_id_short = post.getId_short();
+
+		if ( !arguments.res.locals.forum.display.find( arguments.req.params.forum ) || arguments.req.params.post_slug.find( slugifyTitle( post.getTitle() ) ) == 0 ) {
+			arguments.res.locals.jsData.h = "f/" & arguments.res.locals.forum.display & "/comments/" & post.getId_short() & "/" & slugifyTitle( post.getTitle() );
+		}
+
+		post.trackView( arguments.res.locals.currentUser.id, arguments.req.get( "User-Agent" ) ?: "" );
+
+		var siteName = variables.AppContext.get( "Config" ).getSiteName();
+		arguments.res.locals.socialMeta[ "og:type" ]             = "article";
+		arguments.res.locals.socialMeta[ "article:author" ]      = lCase( siteName );
+		arguments.res.locals.socialMeta[ "og:description" ]      = "f/" & arguments.res.locals.forum.display & " - " & arguments.res.locals.forum.about;
+		arguments.res.locals.socialMeta[ "twitter:description" ] = "f/" & arguments.res.locals.forum.display & " - " & arguments.res.locals.forum.about;
+		arguments.res.locals.socialMeta[ "og:title" ]            = "f/" & arguments.res.locals.forum.display & " - " & post.getTitle();
+		arguments.res.locals.socialMeta[ "twitter:title" ]       = "f/" & arguments.res.locals.forum.display & " - " & post.getTitle();
+		arguments.res.locals.socialMeta[ "og:url" ]              = arguments.res.locals.canonicalUrl;
+		arguments.res.locals.socialMeta[ "twitter:url" ]         = arguments.res.locals.canonicalUrl;
+
+		var linkData = post.getLink_data();
+		if ( post.getPost_type() == "link" && linkData.keyExists( "og:description" ) && len( trim( linkData[ "og:description" ] ) ) ) {
+			arguments.res.locals.socialMeta[ "og:description" ]      = linkData[ "og:description" ];
+			arguments.res.locals.socialMeta[ "twitter:description" ] = linkData[ "og:description" ];
+		}
+		if ( linkData.keyExists( "image" ) && len( linkData.image ) ) {
+			arguments.res.locals.socialMeta[ "og:image" ]      = linkData.image;
+			arguments.res.locals.socialMeta[ "twitter:image" ] = linkData.image;
+		}
+
+		arguments.res.locals.needsPrism = true;
+
+		var focusComment = arguments.res.locals.keyExists( "focusComment" ) ? arguments.res.locals.focusComment : "";
+		var commentsTree = len( focusComment ) ? post.getCommentsTree( { root: focusComment } ) : post.getCommentsTree();
+
+		var isIdentified     = arguments.res.locals.isIdentified;
+		var currentPerms     = arguments.res.locals.currentUser.permissions;
+		var isForumModerator = currentPerms.listFind( "RENEGADE_ADMIN" ) || currentPerms.listFind( "FORUM_MODERATOR_" & uCase( arguments.res.locals.forum.display ) );
+
+		variables.View.renderPage( variables.app, arguments.res, "post/view", {
+			post            : post.getMemento(),
+			commentsTree    : commentsTree,
+			focusComment    : focusComment,
+			voteScore       : variables.AppContext.get( "Vote" ).getScore( post.getId() ),
+			userVote        : isIdentified ? variables.AppContext.get( "Vote" ).getUserVote( arguments.res.locals.currentUser.id, post.getId() ) : 0,
+			isBookmarked    : isIdentified ? new "models.beans.Bookmark"().isBookmarked( arguments.res.locals.currentUser.id, post.getId() ) : false,
+			isAuthor        : isIdentified && post.getUsers_id() == arguments.res.locals.currentUser.id,
+			isForumModerator: isForumModerator,
+			viewCount       : post.getViewCount(),
+			// Stamps the requesting session present before rendering the count, so a viewer
+			// never sees "0 viewing now" while looking straight at the page — same trick used
+			// for forum presence in renderForumIndex() above.
+			postPresenceCount: variables.AppContext.get( "Presence" ).pingPost( post.getId_short(), arguments.req.sessionID )
+		} );
+	}
+
+	function createPostFormRoute( req, res ) {
+		if ( !arguments.res.locals.isIdentified ) {
+			arguments.res.redirect( "/f/all" );
+			return;
+		}
+		var currentPerms  = arguments.res.locals.currentUser.permissions;
+		var subscribedIds = arguments.res.locals.subscribedForumIds;
+		var forums = arguments.res.locals.forumsList.filter( ( f ) => {
+			return !f.is_private || currentPerms.listFind( "RENEGADE_ADMIN" ) || subscribedIds.keyExists( f.id_short );
+		} );
+		variables.View.renderPage( variables.app, arguments.res, "post/create", {
+			forums: forums, selected: arguments.req.params.forum ?: ( arguments.req.query.forum ?: "" )
+		} );
+	}
+
+	function createPostSubmitRoute( req, res ) {
+		if ( !arguments.res.locals.isIdentified ) {
+			arguments.res.redirect( "/f/all" );
+			return;
+		}
+
+		var forumName = trim( arguments.req.body.forum ?: "" );
+		var postType  = trim( arguments.req.body.post_type ?: "post" );
+		var title     = trim( arguments.req.body.title ?: "" );
+		var linkUrl   = trim( arguments.req.body.link_url ?: "" );
+		var bodyText  = arguments.req.body.body ?: "";
+
+		var currentPerms  = arguments.res.locals.currentUser.permissions;
+		var subscribedIds = arguments.res.locals.subscribedForumIds;
+		var forums = arguments.res.locals.forumsList.filter( ( f ) => {
+			return !f.is_private || currentPerms.listFind( "RENEGADE_ADMIN" ) || subscribedIds.keyExists( f.id_short );
+		} );
+
+		var reRenderWithError = function( required string message ) {
+			arguments.res.locals.flashError = arguments.message;
+			variables.View.renderPage( variables.app, arguments.res, "post/create", {
+				forums: forums, selected: forumName, formError: arguments.message
+			} );
+		};
+
+		if ( !len( title ) ) {
+			reRenderWithError( "Title must be specified" );
+			return;
+		}
+		if ( postType == "link" && !len( linkUrl ) ) {
+			reRenderWithError( "You must enter a URL" );
+			return;
+		}
+		if ( postType == "link" && !( linkUrl.lCase().left( 7 ) == "http://" || linkUrl.lCase().left( 8 ) == "https://" ) ) {
+			reRenderWithError( "URL must start with http:// or https://" );
+			return;
+		}
+		if ( postType != "link" && !len( trim( bodyText ) ) ) {
+			reRenderWithError( "You must enter message contents" );
+			return;
+		}
+
+		var forum = new "models.beans.Forum"().getByName( forumName );
+		if ( !forum.hasLoaded() ) {
+			reRenderWithError( "Could not load the selected forum. Please refresh and try again." );
+			return;
+		}
+
+		var uid = arguments.res.locals.currentUser.id;
+
+		var post          = new "models.beans.Post"();
+		var generatedId   = lCase( createGUID() );
+		post.setId( generatedId );
+		post.setId_short( left( generatedId, 8 ) );
+		post.setUsers_id( uid );
+		post.setForums_id( forum.getId() );
+		post.setPost_type( postType );
+		post.setTitle( title );
+		if ( postType == "link" ) {
+			post.setLink_url( linkUrl );
+			post.setBody( bodyText );
+		} else {
+			post.setBody( bodyText );
+		}
+
+		if ( !post.createPost() ) {
+			reRenderWithError( "Post could not be saved. Please try again." );
+			return;
+		}
+
+		try {
+			variables.AppContext.get( "Vote" ).toggle( uid, 1, post.getId() );
+		} catch ( any e ) {
+			variables.AppContext.get( "Logger" ).warn( "Auto-upvote failed on new post #post.getId()#: #e.message#" );
+		}
+
+		arguments.res.redirect( "/f/" & forum.getDisplay() & "/comments/" & post.getId_short() & "/" & slugifyTitle( post.getTitle() ) );
+	}
+
+	function linkPreviewAction( req, res ) {
+		if ( !arguments.res.locals.isIdentified ) {
+			arguments.res.status( 401 ).json( { success: false, error: "Authentication required" } );
+			return;
+		}
+		var targetUrl = trim( arguments.req.query.url ?: "" );
+		if ( !( targetUrl.lCase().left( 7 ) == "http://" || targetUrl.lCase().left( 8 ) == "https://" ) ) {
+			arguments.res.json( { success: false, error: "URL must start with http:// or https://" } );
+			return;
+		}
+		var linkMeta = {};
+		try {
+			linkMeta = variables.AppContext.get( "SpiderService" ).spider( targetUrl );
+		} catch ( any e ) {
+			variables.AppContext.get( "Logger" ).error( "linkPreviewAction spider failed: " & e.message );
+			arguments.res.json( { success: false, error: "Could not fetch metadata for this URL" } );
+			return;
+		}
+		if ( linkMeta.isEmpty() ) {
+			arguments.res.json( { success: false, error: "No metadata found for this URL" } );
+			return;
+		}
+		var utilityService = variables.AppContext.get( "UtilityService" );
+		var ogText = ( key ) => utilityService.normalizeText( linkMeta[ "og:" & key ] ?: ( linkMeta[ "twitter:" & key ] ?: "" ) );
+		var title = ogText( "title" );
+		var description = ogText( "description" );
+		arguments.res.json( {
+			success: true,
+			title: title,
+			description: description,
+			image: linkMeta[ "og:image" ] ?: ""
+		} );
+	}
+
+	function forumModRoute( req, res ) {
+		var f = new "models.beans.Forum"().getByName( arguments.req.params.forum );
+		if ( !f.hasLoaded() ) {
+			arguments.res.redirect( "/" );
+			return;
+		}
+		var forumData = f.getMemento();
+		var permName  = "FORUM_MODERATOR_" & uCase( forumData.display );
+		if (
+			!arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) &&
+			!arguments.res.locals.currentUser.permissions.listFind( permName )
+		) {
+			arguments.res.redirect( "/f/" & encodeForURL( arguments.req.params.forum ) );
+			return;
+		}
+		arguments.res.locals.forum = forumData;
+		variables.View.renderPage( variables.app, arguments.res, "forum/mod", {
+			mods: variables.AppContext.get( "Admin" ).getForumModerators( forumData.permissions_id ),
+			members: getForumMembers( forumData.id )
+		} );
+	}
+
+	function forumIndexRoute( req, res ) {
+		renderForumIndex( arguments.req, arguments.res, arguments.req.params.forum );
+	}
+
+	function settingsRoute( req, res ) {
+		if ( !arguments.res.locals.isIdentified ) {
+			arguments.res.redirect( "/" );
+			return;
+		}
+		variables.View.renderPage( variables.app, arguments.res, "user/settings", {} );
+	}
+
+	function userAchievementsRoute( req, res ) {
+		arguments.res.locals.activeTab = "achievements";
+		arguments.res.locals.userName  = arguments.req.params.user;
+
+		var user = new "models.beans.User"().getUserByName( arguments.req.params.user );
+		if ( !user.hasLoaded() ) {
+			arguments.res.redirect( "/404" );
+			return;
+		}
+		if ( user.getId() != arguments.res.locals.currentUser.id ) {
+			arguments.res.redirect( "/u/" & encodeForURL( arguments.req.params.user ) );
+			return;
+		}
+
+		var AchievementService = variables.AppContext.get( "AchievementService" );
+		var earned = AchievementService.getUserEarnedAchievements( user.getId() );
+		var allTierMap = {};
+		for ( var ach in earned ) {
+			allTierMap[ ach.slug ] = AchievementService.getAllTiers( ach.slug );
+		}
+
+		variables.View.renderPage( variables.app, arguments.res, "user/achievements", {
+			profileUser         : user.getMemento(),
+			profileStats        : user.getProfileStats(),
+			profileAchievements : earned,
+			allTierMap          : allTierMap
+		} );
+	}
+
+	function userCommentsRoute( req, res ) {
+		arguments.res.locals.activeTab = "comments";
+		arguments.res.locals.userName  = arguments.req.params.user;
+
+		var user = new "models.beans.User"().getUserByName( arguments.req.params.user );
+		if ( !user.hasLoaded() ) {
+			arguments.res.redirect( "/404" );
+			return;
+		}
+		variables.View.renderPage( variables.app, arguments.res, "user/comments", {
+			commentsByUser      : user.getComments( arguments.res.locals.currentUser.id ),
+			profileUser         : user.getMemento(),
+			profileStats        : user.getProfileStats(),
+			profileAchievements : variables.AppContext.get( "AchievementService" ).getUserEarnedAchievements( user.getId() )
+		} );
+	}
+
+	function userBookmarksRoute( req, res ) {
+		arguments.res.locals.activeTab = "bookmarks";
+		arguments.res.locals.userName  = arguments.req.params.user;
+
+		var user = new "models.beans.User"().getUserByName( arguments.req.params.user );
+		if ( !user.hasLoaded() ) {
+			arguments.res.redirect( "/404" );
+			return;
+		}
+		if ( user.getId() != arguments.res.locals.currentUser.id ) {
+			arguments.res.redirect( "/u/" & encodeForURL( arguments.req.params.user ) );
+			return;
+		}
+		variables.View.renderPage( variables.app, arguments.res, "user/bookmarks", {
+			profileUser         : user.getMemento(),
+			profileStats        : user.getProfileStats(),
+			profileAchievements : variables.AppContext.get( "AchievementService" ).getUserEarnedAchievements( user.getId() ),
+			bookmarkedPosts     : new "models.beans.Bookmark"().getBookmarksByUser( user.getId() )
+		} );
+	}
+
+	function userIndexRoute( req, res ) {
+		arguments.res.locals.activeTab = "posts";
+		arguments.res.locals.userName  = arguments.req.params.user;
+
+		var user = new "models.beans.User"().getUserByName( arguments.req.params.user );
+		if ( !user.hasLoaded() ) {
+			arguments.res.redirect( "/404" );
+			return;
+		}
+		variables.View.renderPage( variables.app, arguments.res, "user/index", {
+			postsByUser         : user.getPosts( arguments.res.locals.currentUser.id ),
+			commentsByUser      : user.getComments( arguments.res.locals.currentUser.id ),
+			profileUser         : user.getMemento(),
+			profileStats        : user.getProfileStats(),
+			profileAchievements : variables.AppContext.get( "AchievementService" ).getUserEarnedAchievements( user.getId() )
+		} );
+	}
+
+	function goRoute( req, res ) {
+		var targetUrl = "";
+		try {
+			targetUrl = toString( toBinary( arguments.req.params.link ) );
+		} catch ( any e ) {
+			notFoundRoute( arguments.req, arguments.res );
+			return;
+		}
+		if ( !targetUrl.startsWith( "http://" ) && !targetUrl.startsWith( "https://" ) ) {
+			notFoundRoute( arguments.req, arguments.res );
+			return;
+		}
+		variables.View.renderPage( variables.app, arguments.res, "redirect/go", { targetUrl: targetUrl } );
+	}
+
+	function modRoute( req, res, pageName ) {
+		if ( !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) ) {
+			arguments.res.redirect( "/" );
+			return;
+		}
+
+		var Admin = variables.AppContext.get( "Admin" );
+		var extraData = {};
+
+		switch ( arguments.pageName ) {
+			case "activity":
+				extraData = { activity: Admin.getRecentActivity() };
+				break;
+			case "forums":
+				extraData = { forums: Admin.getForums() };
+				break;
+			case "posts":
+				extraData = {
+					topViewed: Admin.getTopViewedPosts(),
+					recentlyDeleted: Admin.getRecentlyDeletedPosts()
+				};
+				break;
+			case "users":
+				extraData = { users: variables.AppContext.get( "UsersService" ).list_users() ?: [] };
+				break;
+			case "mods":
+				extraData = { forums: Admin.getForums() };
+				break;
+		}
+
+		variables.View.renderPage( variables.app, arguments.res, "moderator/" & arguments.pageName, extraData );
+	}
+
+	// =========================================================================
+	// Private helpers (not routes — safe to be private, only called from this
+	// class's own route methods, never invoked directly by boxlang-express)
+	// =========================================================================
+
+	private function renderForumIndex( req, res, forumParam ) {
+		arguments.res.locals.posts = [];
+
+		if ( !len( arguments.forumParam ) || arguments.forumParam == "all" ) {
+			arguments.res.locals.forumSelect = false;
+			arguments.res.locals.jsData.h    = "f/all";
+		} else {
+			var f = new "models.beans.Forum"().getByName( arguments.forumParam, arguments.res.locals.currentUser.id );
+			if ( !f.hasLoaded() ) {
+				arguments.res.redirect( "/" );
+				return;
+			}
+			if (
+				f.getIs_private()
+				&& !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+				&& !arguments.res.locals.subscribedForumIds.keyExists( f.getId_short() )
+			) {
+				arguments.res.status( 404 );
+				variables.View.renderPage( variables.app, arguments.res, "main/missing", {} );
+				return;
+			}
+			arguments.res.locals.forum = f.getMemento();
+			if ( !arguments.res.locals.forum.display.find( arguments.forumParam ) ) {
+				arguments.res.locals.jsData.h = "f/" & arguments.res.locals.forum.display;
+			}
+			arguments.res.locals.socialMeta[ "og:description" ]      = "f/" & arguments.res.locals.forum.display & " - " & arguments.res.locals.forum.about;
+			arguments.res.locals.socialMeta[ "twitter:description" ] = "f/" & arguments.res.locals.forum.display & " - " & arguments.res.locals.forum.about;
+
+			// Stamps the requesting session present before rendering the count, so a viewer
+			// never sees "0" — they're by definition viewing this forum right now (mirrors the
+			// source app's BroadcastService.bx::forumPresenceCount() trick).
+			arguments.res.locals.jsData.forum_id_short = arguments.res.locals.forum.id_short;
+			arguments.res.locals.jsData.forum_display  = arguments.res.locals.forum.display;
+			arguments.res.locals.forumPresenceCount = variables.AppContext.get( "Presence" ).ping( arguments.res.locals.forum.id_short, arguments.req.sessionID );
+		}
+
+		arguments.res.locals.socialMeta[ "og:url" ]      = arguments.res.locals.canonicalUrl;
+		arguments.res.locals.socialMeta[ "twitter:url" ] = arguments.res.locals.canonicalUrl;
+
+		var filters = {
+			limit: 50,
+			viewerId: arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "",
+			isAdmin: arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" )
+		};
+		if ( len( arguments.forumParam ) && arguments.forumParam != "all" ) {
+			filters.forum = arguments.forumParam;
+		}
+		var feed = variables.AppContext.get( "DismalDAO" ).getPosts( filters );
+		decorateFeedWithUserState( feed, arguments.res.locals.isIdentified ? arguments.res.locals.currentUser.id : "" );
+
+		variables.View.renderPage( variables.app, arguments.res, "feed/forum", { feed: feed } );
+	}
+
+	/**
+	 * Mutates each feed row in place, adding `user_vote`/`is_bookmarked` for the given viewer —
+	 * DismalDAO's feed queries are shared across all visitors, so per-viewer vote/bookmark state
+	 * isn't (and shouldn't be) baked into the cached/shared SQL result; this is the same per-row
+	 * lookup cost model the source app's cbwire feed.item component used per instance (see the
+	 * Phase 3 execution notes on this pattern), not a new N+1 regression. No-op for anonymous
+	 * visitors, who never have a vote or bookmark to show.
+	 */
+	/**
+	 * Populates each row's `user_vote`/`is_bookmarked` for the given viewer. Warms
+	 * dismalCache for the whole feed in one batch query first (models/beans/Feed.bx::warmCache()
+	 * — already written for the API's JSON feed endpoints but never wired into these page-rendered
+	 * feeds until now), so the per-row Vote.getUserVote()/Bookmark.isBookmarked() calls below hit
+	 * cache instead of running their own query per row — 1 query total on a cold cache instead of
+	 * up to 2 per post (100 for a 50-post feed).
+	 */
+	private function decorateFeedWithUserState( required array feed, required string usersId ) {
+		if ( !len( arguments.usersId ) ) return;
+		new "models.beans.Feed"().warmCache( arguments.feed, arguments.usersId );
+		var Vote = variables.AppContext.get( "Vote" );
+		var Bookmark = new "models.beans.Bookmark"();
+		for ( var row in arguments.feed ) {
+			row[ "user_vote" ] = Vote.getUserVote( arguments.usersId, row.id );
+			row[ "is_bookmarked" ] = Bookmark.isBookmarked( arguments.usersId, row.id );
+		}
+	}
+
+	private function getForumMembers( required string forumsId ) {
+		return queryExecute(
+			"SELECT BIN_TO_UUID(U.id) AS user_id, U.id_short AS user_id_short, U.user_name
+			 FROM UsersForums UF
+			 JOIN Users U ON U.id = UF.users_id
+			 WHERE UF.forums_id = UUID_TO_BIN(:forums_id)
+			 ORDER BY U.user_name",
+			{ forums_id: { value: arguments.forumsId, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+	}
+
+	private function slugifyTitle( required string title ) {
+		var slug = lCase( trim( arguments.title ) );
+		// Replace (not delete) a disallowed character with a hyphen placeholder, so punctuation
+		// sitting right next to a space collapses into the same hyphen run as that space in the
+		// next step, instead of leaving a separate stripped gap that survives as a double hyphen.
+		slug     = reReplace( slug, "[^a-z0-9\s-]", "-", "all" );
+		slug     = reReplace( slug, "[\s-]+", "-", "all" );
+		return reReplace( slug, "^-+|-+$", "", "all" );
+	}
+
+}

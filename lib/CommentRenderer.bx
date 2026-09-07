@@ -1,0 +1,110 @@
+/**
+ * Renders one comment node (plus its children, recursively) as an HTML fragment. Shared by
+ * `views/post/view.bxm` (full-tree render) and `routes/ActionsRouter.bx` (returning the new
+ * node's HTML after a reply is posted, so the client can insert it without a page reload).
+ *
+ * Not a `#view(...)# partial — a partial-include closure can't see an ambient loop variable
+ * from its caller, only what renderToString() itself closed over (see lib/View.bx's own notes).
+ * This is a plain class method instead, called directly with the data it needs.
+ */
+class {
+
+	/**
+	 * `momentFrom()`/`enhanceAnchorsInHtml()` from lib/ViewHelpers.bxm are only defined inside a
+	 * view's own render scope (via that file's `include`) — unreachable from a plain class like
+	 * this one, used from both a view (post/view.bxm) and a route (ActionsRouter.bx). Duplicated
+	 * here rather than shared, since it's this one small pure function.
+	 */
+	private function momentFrom( required any target ) {
+		var Instant = createObject( "java", "java.time.Instant" );
+		var ZoneId  = createObject( "java", "java.time.ZoneId" );
+		var Duration = createObject( "java", "java.time.Duration" );
+		var zone = ZoneId.of( "UTC" );
+		var n  = javacast( "long", arguments.target );
+		var ms = ( n GT 9999999999 ) ? n : n * 1000;
+		var t  = Instant.ofEpochMilli( javacast( "long", ms ) ).atZone( zone );
+		var seconds = Duration.between( t, Instant.now().atZone( zone ) ).getSeconds();
+		var absSec  = abs( seconds );
+		var days    = absSec / 86400;
+		if      ( absSec < 45 )     return "just now";
+		else if ( absSec < 90 )     return "1m";
+		else if ( absSec < 2700 )   return round( absSec / 60 ) & "m";
+		else if ( absSec < 5400 )   return "1h";
+		else if ( absSec < 79200 )  return round( absSec / 3600 ) & "h";
+		else if ( absSec < 129600 ) return "1d";
+		else if ( days   < 26 )     return round( days ) & "d";
+		else if ( days   < 45 )     return "1mo";
+		else if ( days   < 320 )    return round( days / 30 ) & "mo";
+		else if ( days   < 548 )    return "1y";
+		else                        return round( days / 365 ) & "y";
+	}
+
+	private function enhanceAnchorsInHtml( required string html ) {
+		return new "lib.AppContext"().get( "UtilityService" ).enhanceAnchorsInHtml( arguments.html );
+	}
+
+	/**
+	 * @param node     Comment struct (id, id_short, user_name, body, vote_score, created_utc, ...)
+	 *                 optionally with a nested `children` array, same shape Post::getCommentsTree()
+	 *                 returns.
+	 * @param currentUserId Full UUID of the viewer — used to gate the reply/edit/delete controls.
+	 * @param isModerator   Whether the viewer can delete/edit any comment, not just their own.
+	 * @param postAuthorId  Full UUID of the post's own author — used only for the "OP" badge.
+	 */
+	function renderNode( required struct node, required string currentUserId, boolean isModerator = false, string postAuthorId = "", numeric depth = 0 ) {
+		var isAuthor  = arguments.node.users_id == arguments.currentUserId;
+		var canManage = isAuthor || arguments.isModerator;
+		var isOP      = len( arguments.postAuthorId ) && arguments.node.users_id == arguments.postAuthorId;
+
+		var html = '<article class="c-comment" id="c-' & encodeForHTMLAttribute( arguments.node.id_short ) & '" data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" data-depth="' & arguments.depth & '">';
+
+		html &= '<div class="c-comment__header">';
+		html &= '<button type="button" class="c-comment__collapse" data-comment-collapse aria-label="Collapse thread">&minus;</button>';
+		html &= '<a href="/u/' & encodeForURL( arguments.node.user_name ) & '" class="c-comment__author">' & encodeForHTML( arguments.node.user_name ) & '</a>';
+		if ( isOP ) {
+			html &= '<span class="c-comment__op-badge">OP</span>';
+		}
+		html &= '<span class="c-comment__header-sep" aria-hidden="true">&bull;</span>';
+		html &= '<span class="c-comment__timestamp ts-display" data-ts="' & encodeForHTMLAttribute( arguments.node.created_utc ) & '">' & momentFrom( arguments.node.created_utc ) & '</span>';
+		html &= '</div>';
+
+		html &= '<div class="c-comment__content" data-comment-body>' & enhanceAnchorsInHtml( getSafeHTML( markdown( arguments.node.body ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) & '</div>';
+
+		html &= '<div class="c-comment__actions">';
+		html &= '<span class="c-post__vote-pill">';
+		html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-up data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>';
+		html &= '<span class="c-vote__score c-comment__vote-score" data-vote-score aria-label="Score: ' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '">' & encodeForHTML( arguments.node.vote_score ?: 0 ) & '</span>';
+		html &= '<span role="button" tabindex="0" class="c-vote c-comment__vote" data-vote-down data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>';
+		html &= '</span>';
+		if ( len( arguments.currentUserId ) ) {
+			html &= '<span class="c-comment__action-sep" aria-hidden="true"></span>';
+			html &= '<button type="button" class="c-comment__action" data-reply-toggle data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Reply</button>';
+		}
+		if ( canManage ) {
+			html &= '<button type="button" class="c-comment__action" data-edit-toggle data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Edit</button>';
+			html &= '<button type="button" class="c-comment__action c-comment__action--danger" data-comment-delete data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '">Delete</button>';
+		}
+		html &= '</div>';
+
+		if ( len( arguments.currentUserId ) ) {
+			html &= '<form class="c-comment__reply" data-reply-form data-comment-id="' & encodeForHTMLAttribute( arguments.node.id_short ) & '" style="display:none">';
+			html &= '<textarea class="c-comment__textarea" rows="2" placeholder="Reply..." required></textarea>';
+			html &= '<div class="c-comment__actions c-comment__reply-actions">';
+			html &= '<button type="submit" class="c-comment__pill c-comment__button">Post</button>';
+			html &= '</div>';
+			html &= '</form>';
+		}
+
+		html &= '<div class="c-comment__children" data-comment-children>';
+		if ( structKeyExists( arguments.node, "children" ) ) {
+			for ( var child in arguments.node.children ) {
+				html &= renderNode( child, arguments.currentUserId, arguments.isModerator, arguments.postAuthorId, arguments.depth + 1 );
+			}
+		}
+		html &= '</div>';
+
+		html &= '</article>';
+		return html;
+	}
+
+}

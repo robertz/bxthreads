@@ -1,0 +1,543 @@
+/**
+ * Admin REST API — ports handlers/API.bx onto a boxExpressRouter() mounted at /api.
+ * All endpoints require an X-Api-Key header matching the API_KEY env var (see lib/Config.bx),
+ * enforced by one router-level middleware instead of ColdBox's aroundHandler AOP.
+ *
+ * `rc` (the source app's combined URL+FORM+JSON-body request collection) is replicated here as
+ * a plain struct merging req.query and req.body (body wins on key collision) — see buildRc().
+ * Route order matters and is preserved from the source app's config/Router.bx: specific paths
+ * (e.g. /posts/recent) are registered before general ones (/posts/:id_short), since boxlang-express
+ * matches in registration order.
+ */
+class {
+
+	function register( required any app, required any router ) {
+		variables.AppContext = new "lib.AppContext"();
+		var r = arguments.router;
+
+		r.use( ( req, res, next ) => {
+			var configuredKey = variables.AppContext.get( "Config" ).getApiKey();
+			var providedKey   = req.get( "X-Api-Key" ) ?: "";
+			if ( !len( configuredKey ) || providedKey != configuredKey ) {
+				res.status( 401 ).json( { success: false, error: "Unauthorized" } );
+				return;
+			}
+			next();
+		} );
+
+		// Wraps every registered handler so an uncaught exception always returns this router's
+		// own {success:false, error:"..."} shape instead of the generic error middleware's
+		// {error:true, message:"..."} shape — see lib/JsonAction.bx.
+		var jsonAction = variables.AppContext.get( "JsonAction" );
+		var logger     = variables.AppContext.get( "Logger" );
+		var safeAction = ( fn ) => jsonAction.safeAction( logger, fn );
+
+		// ── Search & Browse ─────────────────────────────────────────────────
+		r.get( "/search", safeAction( ( req, res ) => searchAction( req, res ) ) );
+		r.get( "/feed", safeAction( ( req, res ) => feedAction( req, res ) ) );
+
+		// ── Posts (specific before general) ─────────────────────────────────
+		r.get( "/posts/recent", safeAction( ( req, res ) => listRecentPostsAction( req, res ) ) );
+		r.get( "/posts/top-viewed", safeAction( ( req, res ) => listTopViewedPostsAction( req, res ) ) );
+		r.get( "/posts/deleted", safeAction( ( req, res ) => listDeletedPostsAction( req, res ) ) );
+		r.get( "/posts/:id_short", safeAction( ( req, res ) => getPostAction( req, res ) ) );
+		r.put( "/posts/:id_short", safeAction( ( req, res ) => updatePostAction( req, res ) ) );
+
+		// ── Users (specific before general) ─────────────────────────────────
+		r.get( "/users/:username/comments", safeAction( ( req, res ) => getUserCommentsAction( req, res ) ) );
+		r.put( "/users/:username/forums", safeAction( ( req, res ) => updateUserForumsAction( req, res ) ) );
+		r.get( "/users/:username", safeAction( ( req, res ) => getUserAction( req, res ) ) );
+		r.put( "/users/:username", safeAction( ( req, res ) => updateUserAction( req, res ) ) );
+		r.get( "/users", safeAction( ( req, res ) => listUsersAction( req, res ) ) );
+
+		// ── Forums (specific before general) ─────────────────────────────────
+		r.get( "/forums/:display/moderators", safeAction( ( req, res ) => getForumModeratorsAction( req, res ) ) );
+		r.get( "/forums/:display", safeAction( ( req, res ) => getForumAction( req, res ) ) );
+		r.put( "/forums/:display", safeAction( ( req, res ) => updateForumAction( req, res ) ) );
+		r.get( "/forums", safeAction( ( req, res ) => listForumsAction( req, res ) ) );
+
+		// ── Activity ──────────────────────────────────────────────────────
+		r.get( "/activity", safeAction( ( req, res ) => listActivityAction( req, res ) ) );
+
+		// ── Comments ──────────────────────────────────────────────────────
+		r.get( "/comments/:id_short", safeAction( ( req, res ) => getCommentAction( req, res ) ) );
+		r.get( "/comments", safeAction( ( req, res ) => listCommentsAction( req, res ) ) );
+		r.put( "/comments/:id_short", safeAction( ( req, res ) => updateCommentAction( req, res ) ) );
+
+		// ── Votes / Bookmarks / Notifications / Links ───────────────────────
+		r.get( "/votes", safeAction( ( req, res ) => listVotesAction( req, res ) ) );
+		r.get( "/bookmarks", safeAction( ( req, res ) => listBookmarksAction( req, res ) ) );
+		r.get( "/notifications", safeAction( ( req, res ) => listNotificationsAction( req, res ) ) );
+		r.get( "/links", safeAction( ( req, res ) => listLinksAction( req, res ) ) );
+
+		// ── Achievements (specific before general — matches source's literal double-mapping
+		// of DELETE and PUT /achievements/awarded to the same delete action) ──────
+		r.delete( "/achievements/awarded", safeAction( ( req, res ) => deleteAwardedAchievementAction( req, res ) ) );
+		r.put( "/achievements/awarded", safeAction( ( req, res ) => deleteAwardedAchievementAction( req, res ) ) );
+		r.get( "/achievements/awarded", safeAction( ( req, res ) => listAwardedAchievementsAction( req, res ) ) );
+		r.put( "/achievements/:slug/tiers/:tier", safeAction( ( req, res ) => updateAchievementTierAction( req, res ) ) );
+		r.get( "/achievements/:slug", safeAction( ( req, res ) => getAchievementAction( req, res ) ) );
+		r.put( "/achievements/:slug", safeAction( ( req, res ) => updateAchievementAction( req, res ) ) );
+		r.get( "/achievements", safeAction( ( req, res ) => listAchievementsAction( req, res ) ) );
+	}
+
+	// =========================================================================
+	// Search & Browse
+	// =========================================================================
+
+	function searchAction( req, res ) {
+		var searchQuery  = trim( arguments.req.query.q ?: "" );
+		var cursorBefore = val( arguments.req.query.before ?: 0 );
+		var forumScope   = trim( arguments.req.query.forum ?: "" );
+
+		if ( !len( searchQuery ) ) {
+			fail( arguments.res, "q parameter is required", 400 );
+			return;
+		}
+
+		var feedBean = new "models.beans.Feed"().getFeedBySearch( searchQuery, cursorBefore, "", forumScope );
+		ok( arguments.res, feedBean.getMemento() );
+	}
+
+	function feedAction( req, res ) {
+		var forumName    = trim( arguments.req.query.forum ?: "all" );
+		var cursorBefore = val( arguments.req.query.before ?: 0 );
+
+		var feedBean = new "models.beans.Feed"().getForumFeed( forumName, cursorBefore, "" );
+		ok( arguments.res, feedBean.getMemento() );
+	}
+
+	// =========================================================================
+	// Posts
+	// =========================================================================
+
+	function getPostAction( req, res ) {
+		var postBean = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !postBean.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		var postData = postBean.getMemento();
+		postData[ "comments_tree" ] = postBean.getCommentsTree( {} );
+		postData[ "view_count" ]    = postBean.getViewCount();
+		postData[ "vote_score" ]    = new "models.beans.Vote"().getScore( postBean.getId() );
+		ok( arguments.res, postData );
+	}
+
+	function listRecentPostsAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getPostsFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function listTopViewedPostsAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getTopViewedPostsFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function listDeletedPostsAction( req, res ) {
+		var rc = buildRc( arguments.req );
+		rc[ "deleted" ] = "1";
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getPostsFromRequest( rc ) );
+	}
+
+	function updatePostAction( req, res ) {
+		var postBean = new "models.beans.Post"().getByIdShort( arguments.req.params.id_short );
+		if ( !postBean.hasLoaded() ) {
+			fail( arguments.res, "Post not found", 404 );
+			return;
+		}
+		var rc = buildRc( arguments.req );
+		if ( rc.keyExists( "body" ) )    postBean.setBody( rc.body );
+		if ( rc.keyExists( "deleted" ) ) postBean.setDeleted( val( rc.deleted ) );
+		postBean.save();
+		ok( arguments.res, postBean.getMemento() );
+	}
+
+	// =========================================================================
+	// Users
+	// =========================================================================
+
+	function listUsersAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getUsersFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function getUserAction( req, res ) {
+		var userBean = new "models.beans.User"().getUserByName( arguments.req.params.username );
+		if ( !userBean.hasLoaded() ) {
+			fail( arguments.res, "User not found", 404 );
+			return;
+		}
+		var userData = userBean.getMemento();
+		userData[ "stats" ] = userBean.getProfileStats();
+		ok( arguments.res, userData );
+	}
+
+	function updateUserForumsAction( req, res ) {
+		var uname    = arguments.req.params.username;
+		var userBean = new "models.beans.User"().getUserByName( uname );
+		if ( !userBean.hasLoaded() ) {
+			fail( arguments.res, "User not found", 404 );
+			return;
+		}
+
+		var rc     = buildRc( arguments.req );
+		var action = rc.keyExists( "subscribe" ) ? "subscribe" : ( rc.keyExists( "unsubscribe" ) ? "unsubscribe" : "" );
+		var forumName = action == "subscribe" ? trim( rc.subscribe ) : ( action == "unsubscribe" ? trim( rc.unsubscribe ) : "" );
+
+		if ( !len( action ) || !len( forumName ) ) {
+			fail( arguments.res, "Provide 'subscribe' or 'unsubscribe' with a forum display name", 400 );
+			return;
+		}
+
+		var forumBean = new "models.beans.Forum"().getByName( forumName );
+		if ( !forumBean.hasLoaded() ) {
+			fail( arguments.res, "Forum '" & forumName & "' not found", 404 );
+			return;
+		}
+
+		if ( action == "subscribe" ) {
+			userBean.subscribeForum( forumBean.getId() );
+		} else {
+			userBean.unsubscribeForum( forumBean.getId() );
+		}
+		forumBean.invalidateCache( forumBean.getId_short() );
+
+		var freshUser = new "models.beans.User"().getUserByName( uname );
+		ok( arguments.res, {
+			"user_name"     : uname,
+			"action"        : action,
+			"forum"         : forumName,
+			"subscriptions" : freshUser.getSubscribedForums()
+		} );
+	}
+
+	function updateUserAction( req, res ) {
+		var uname    = arguments.req.params.username;
+		var userBean = new "models.beans.User"().getUserByName( uname );
+		if ( !userBean.hasLoaded() ) {
+			fail( arguments.res, "User not found", 404 );
+			return;
+		}
+
+		var rc = buildRc( arguments.req );
+		if ( rc.keyExists( "add_permission" ) && len( trim( rc.add_permission ) ) ) {
+			var permName = uCase( trim( rc.add_permission ) );
+			if ( !userBean.addPermission( permName ) ) {
+				fail( arguments.res, "Permission '" & permName & "' does not exist", 400 );
+				return;
+			}
+		}
+		if ( rc.keyExists( "remove_permission" ) && len( trim( rc.remove_permission ) ) ) {
+			userBean.removePermission( trim( rc.remove_permission ) );
+		}
+
+		var freshUser = new "models.beans.User"().getUserByName( uname );
+		ok( arguments.res, freshUser.getMemento() );
+	}
+
+	function getUserCommentsAction( req, res ) {
+		var userBean = new "models.beans.User"().getUserByName( arguments.req.params.username );
+		if ( !userBean.hasLoaded() ) {
+			fail( arguments.res, "User not found", 404 );
+			return;
+		}
+		ok( arguments.res, userBean.getComments() );
+	}
+
+	// =========================================================================
+	// Forums
+	// =========================================================================
+
+	function listForumsAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getForumsFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function getForumAction( req, res ) {
+		var forumDisplay = arguments.req.params.display;
+		var rc = buildRc( arguments.req );
+		rc[ "q" ] = forumDisplay;
+		var matches = variables.AppContext.get( "DismalService" ).getForumsFromRequest( rc ).filter( ( row ) => row.display == forumDisplay );
+		if ( !matches.len() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		ok( arguments.res, matches[ 1 ] );
+	}
+
+	function getForumModeratorsAction( req, res ) {
+		var forumDisplay = arguments.req.params.display;
+		var rc = buildRc( arguments.req );
+		rc[ "q" ] = forumDisplay;
+		var matches = variables.AppContext.get( "DismalService" ).getForumsFromRequest( rc ).filter( ( row ) => row.display == forumDisplay );
+		if ( !matches.len() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+		ok( arguments.res, variables.AppContext.get( "Admin" ).getForumModerators( matches[ 1 ].permissions_id ) );
+	}
+
+	function updateForumAction( req, res ) {
+		var forumDisplay = arguments.req.params.display;
+		var forumBean    = new "models.beans.Forum"().getByName( forumDisplay );
+		if ( !forumBean.hasLoaded() ) {
+			fail( arguments.res, "Forum not found", 404 );
+			return;
+		}
+
+		var rc = buildRc( arguments.req );
+		if ( rc.keyExists( "about" ) )      forumBean.setAbout( rc.about );
+		if ( rc.keyExists( "icon" ) )       forumBean.setIcon( rc.icon );
+		if ( rc.keyExists( "is_private" ) ) forumBean.setIs_private( val( rc.is_private ) );
+
+		var savedOk = forumBean.save();
+		if ( !savedOk ) {
+			fail( arguments.res, "Failed to save forum", 500 );
+			return;
+		}
+		forumBean.invalidateCache( forumBean.getId_short() );
+
+		var freshForum = new "models.beans.Forum"().getByName( forumDisplay );
+		ok( arguments.res, freshForum.getMemento() );
+	}
+
+	// =========================================================================
+	// Activity
+	// =========================================================================
+
+	function listActivityAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getHistoryFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	// =========================================================================
+	// Comments
+	// =========================================================================
+
+	function listCommentsAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getCommentsFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function getCommentAction( req, res ) {
+		var commentBean = new "models.beans.Comment"().getByIdShort( arguments.req.params.id_short );
+		if ( !commentBean.hasLoaded() ) {
+			fail( arguments.res, "Comment not found", 404 );
+			return;
+		}
+		ok( arguments.res, commentBean.getMemento() );
+	}
+
+	function updateCommentAction( req, res ) {
+		var commentBean = new "models.beans.Comment"().getByIdShort( arguments.req.params.id_short );
+		if ( !commentBean.hasLoaded() ) {
+			fail( arguments.res, "Comment not found", 404 );
+			return;
+		}
+		var rc = buildRc( arguments.req );
+		if ( rc.keyExists( "body" ) )    commentBean.setBody( rc.body );
+		if ( rc.keyExists( "deleted" ) ) commentBean.setDeleted( val( rc.deleted ) );
+		commentBean.save();
+		ok( arguments.res, commentBean.getMemento() );
+	}
+
+	// =========================================================================
+	// Votes / Bookmarks / Notifications / Links
+	// =========================================================================
+
+	function listVotesAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getVotesFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function listBookmarksAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getBookmarksFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function listNotificationsAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getNotificationsFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function listLinksAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getLinksFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	// =========================================================================
+	// Achievements
+	// =========================================================================
+
+	function listAchievementsAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getAchievementsFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function getAchievementAction( req, res ) {
+		var result = variables.AppContext.get( "DismalDAO" ).getAchievementBySlug( arguments.req.params.slug );
+		if ( result.isEmpty() ) {
+			fail( arguments.res, "Achievement not found", 404 );
+			return;
+		}
+		ok( arguments.res, result );
+	}
+
+	function listAwardedAchievementsAction( req, res ) {
+		ok( arguments.res, variables.AppContext.get( "DismalService" ).getAwardedAchievementsFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	function deleteAwardedAchievementAction( req, res ) {
+		var rc       = buildRc( arguments.req );
+		var username = trim( rc.username ?: "" );
+		var slug     = trim( rc.slug ?: "" );
+
+		if ( !len( username ) || !len( slug ) ) {
+			fail( arguments.res, "username and slug are required", 400 );
+			return;
+		}
+
+		var user = new "models.beans.User"().getUserByName( username );
+		if ( !user.hasLoaded() ) {
+			fail( arguments.res, "User not found", 404 );
+			return;
+		}
+
+		queryExecute(
+			"DELETE UA FROM UserAchievements UA
+			 INNER JOIN Achievements A ON UA.achievements_id = A.id
+			 WHERE UA.users_id = UUID_TO_BIN(:users_id) AND A.slug = :slug",
+			{
+				"users_id": { value: user.getId(), cfsqltype: "cf_sql_varchar" },
+				"slug"    : { value: slug, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+
+		ok( arguments.res, { "removed": slug, "username": username } );
+	}
+
+	function updateAchievementAction( req, res ) {
+		var slug = arguments.req.params.slug;
+		var existing = queryExecute(
+			"SELECT BIN_TO_UUID(id) AS id FROM Achievements WHERE slug = :slug LIMIT 1",
+			{ "slug": { value: slug, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		if ( !existing.len() ) {
+			fail( arguments.res, "Achievement not found", 404 );
+			return;
+		}
+
+		var rc     = buildRc( arguments.req );
+		var sets   = [];
+		var params = { "slug": { value: slug, cfsqltype: "cf_sql_varchar" } };
+
+		if ( rc.keyExists( "category" ) ) {
+			sets.append( "category = :category" );
+			params[ "category" ] = { value: trim( rc.category ), cfsqltype: "cf_sql_varchar" };
+		}
+		if ( rc.keyExists( "name" ) ) {
+			sets.append( "name = :name" );
+			params[ "name" ] = { value: trim( rc.name ), cfsqltype: "cf_sql_varchar" };
+		}
+		if ( rc.keyExists( "secret" ) ) {
+			sets.append( "secret = :secret" );
+			params[ "secret" ] = { value: val( rc.secret ), cfsqltype: "cf_sql_tinyint" };
+		}
+		if ( rc.keyExists( "metric" ) ) {
+			var validMetrics = [ "account_days", "contribution_count", "post_count", "link_count", "likes_received", "likes_given", "reply_count", "streak_days", "load_more_count", "account_days_max_posts", "absence_days" ];
+			if ( !validMetrics.find( rc.metric ) ) {
+				fail( arguments.res, "Invalid metric. Valid values: " & validMetrics.toList( ", " ), 400 );
+				return;
+			}
+			sets.append( "metric = :metric" );
+			params[ "metric" ] = { value: trim( rc.metric ), cfsqltype: "cf_sql_varchar" };
+		}
+		if ( rc.keyExists( "sort_order" ) ) {
+			sets.append( "sort_order = :sort_order" );
+			params[ "sort_order" ] = { value: val( rc.sort_order ), cfsqltype: "cf_sql_integer" };
+		}
+
+		if ( !sets.len() ) {
+			fail( arguments.res, "No writable fields provided (category, name, secret, metric, sort_order)", 400 );
+			return;
+		}
+
+		queryExecute( "UPDATE Achievements SET " & sets.toList( ", " ) & " WHERE slug = :slug", params );
+		ok( arguments.res, variables.AppContext.get( "DismalDAO" ).getAchievementBySlug( slug ) );
+	}
+
+	function updateAchievementTierAction( req, res ) {
+		var slug    = arguments.req.params.slug;
+		var tierNum = val( arguments.req.params.tier ?: 0 );
+
+		if ( tierNum < 1 || tierNum > 5 ) {
+			fail( arguments.res, "Tier must be between 1 and 5", 400 );
+			return;
+		}
+
+		var existing = queryExecute(
+			"SELECT BIN_TO_UUID(AT2.id) AS id
+			 FROM AchievementTiers AT2
+			 INNER JOIN Achievements A ON AT2.achievements_id = A.id
+			 WHERE A.slug = :slug AND AT2.tier = :tier
+			 LIMIT 1",
+			{
+				"slug": { value: slug, cfsqltype: "cf_sql_varchar" },
+				"tier": { value: tierNum, cfsqltype: "cf_sql_tinyint" }
+			},
+			{ returnType: "array" }
+		);
+		if ( !existing.len() ) {
+			fail( arguments.res, "Achievement tier not found", 404 );
+			return;
+		}
+
+		var rc     = buildRc( arguments.req );
+		var sets   = [];
+		var params = { "tier_id": { value: existing[ 1 ].id, cfsqltype: "cf_sql_varchar" } };
+
+		if ( rc.keyExists( "label" ) ) {
+			sets.append( "label = :label" );
+			params[ "label" ] = { value: trim( rc.label ), cfsqltype: "cf_sql_varchar" };
+		}
+		if ( rc.keyExists( "threshold" ) ) {
+			sets.append( "threshold = :threshold" );
+			params[ "threshold" ] = { value: trim( rc.threshold ), cfsqltype: "cf_sql_varchar" };
+		}
+		if ( rc.keyExists( "title" ) ) {
+			sets.append( "title = :title" );
+			params[ "title" ] = { value: trim( rc.title ), cfsqltype: "cf_sql_varchar" };
+		}
+		if ( rc.keyExists( "flavor" ) ) {
+			sets.append( "flavor = :flavor" );
+			params[ "flavor" ] = { value: trim( rc.flavor ), cfsqltype: "cf_sql_varchar" };
+		}
+		if ( rc.keyExists( "threshold_value" ) ) {
+			sets.append( "threshold_value = :threshold_value" );
+			params[ "threshold_value" ] = { value: val( rc.threshold_value ), cfsqltype: "cf_sql_integer" };
+		}
+		if ( rc.keyExists( "threshold_max" ) ) {
+			sets.append( "threshold_max = :threshold_max" );
+			params[ "threshold_max" ] = { value: val( rc.threshold_max ), cfsqltype: "cf_sql_integer" };
+		}
+
+		if ( !sets.len() ) {
+			fail( arguments.res, "No writable fields provided (label, threshold, threshold_value, threshold_max, title, flavor)", 400 );
+			return;
+		}
+
+		queryExecute( "UPDATE AchievementTiers SET " & sets.toList( ", " ) & " WHERE id = UUID_TO_BIN(:tier_id)", params );
+		ok( arguments.res, variables.AppContext.get( "DismalDAO" ).getAchievementBySlug( slug ) );
+	}
+
+	// =========================================================================
+	// Private helpers
+	// =========================================================================
+
+	private function ok( required any res, required any data, numeric statusCode = 200 ) {
+		arguments.res.status( arguments.statusCode ).json( { success: true, data: arguments.data } );
+	}
+
+	private function fail( required any res, required string message, numeric statusCode = 400 ) {
+		arguments.res.status( arguments.statusCode ).json( { success: false, error: arguments.message } );
+	}
+
+	/** Merges req.query and req.body into one plain struct — the source app's `rc` equivalent. */
+	private function buildRc( required any req ) {
+		var rc = structCopy( arguments.req.query );
+		rc.append( arguments.req.body, true );
+		return rc;
+	}
+
+}

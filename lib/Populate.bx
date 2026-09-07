@@ -1,0 +1,21 @@
+/**
+ * Replaces WireBox's `populator` (`inject="wirebox:populator"`) — every bean's getById()/
+ * getByIdShort() calls `populator.populateFromStruct(target=this, memento=row)` after a cached/
+ * fresh DB read. Same call signature (named args target/memento) so bean code doesn't change
+ * beyond swapping the injection for `new "lib.Populate"()`.
+ */
+class {
+
+	function populateFromStruct( required any target, required struct memento ) {
+		for ( var key in arguments.memento ) {
+			var setter = "set" & key;
+			if ( structKeyExists( arguments.target, setter ) ) {
+				invoke( arguments.target, setter, [ arguments.memento[ key ] ] );
+			} else {
+				arguments.target[ key ] = arguments.memento[ key ];
+			}
+		}
+		return arguments.target;
+	}
+
+}

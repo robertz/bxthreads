@@ -1,0 +1,26 @@
+/**
+ * Replaces qb — a minimal helper over queryExecute() for the "additive optional filter" pattern
+ * DismalDAO.bx uses throughout: build a WHERE clause conditionally from a filters struct, execute
+ * with named, cfsqltype-tagged parameters. This is deliberately not a query builder — DAO methods
+ * write their own SQL (joins, correlated subselects) as plain strings; this only centralizes the
+ * WHERE-assembly boilerplate and the datasource/returnType defaults.
+ */
+class {
+
+	/**
+	 * Joins an array of SQL fragments ("F.deleted = 0", "U.user_name = :username", ...) into a
+	 * WHERE clause, or "" if none were added.
+	 */
+	function whereClause( required array conditions ) {
+		return arguments.conditions.len() ? ( " WHERE " & arrayToList( arguments.conditions, " AND " ) ) : "";
+	}
+
+	function run( required string sql, struct params = {} ) {
+		return queryExecute(
+			arguments.sql,
+			arguments.params,
+			{ datasource: "dismal", returnType: "array" }
+		);
+	}
+
+}

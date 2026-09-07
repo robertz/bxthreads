@@ -1,0 +1,503 @@
+/**
+ * Feed bean — cursor-paginated post index with batch cache warm-up.
+ *
+ * ## Two-phase loading
+ * Feed queries are deliberately lightweight: they select only `id_short` and a
+ * UNIX timestamp (`created_utc`) for each post. The full post struct, vote score,
+ * and per-user vote are loaded in a second pass by `warmCache()`, which runs a
+ * single batch SQL query and writes results into `dismalCache` under the same keys
+ * that `Post.getByIdShort()`, `Vote.getScore()`, and `Vote.getUserVote()` consult.
+ * Individual item-wire renders therefore hit warm cache instead of issuing separate
+ * DB queries.
+ *
+ * ## Cursor-based pagination
+ * Both feed methods accept an optional `before` UNIX timestamp. Omitting it (or
+ * passing 0) loads the first page; passing the current `feed_end` value loads the
+ * next page. The cursor predicate `UNIX_TIMESTAMP(created_at) < :before` is stable
+ * even when new posts are inserted between loads. `feed_start` holds the timestamp
+ * of the newest post; `feed_end` holds the timestamp of the oldest post on the
+ * current page and serves as the cursor for the next call.
+ *
+ * ## Feed modes
+ *  - **Home feed** (`getHomeFeed`): posts from forums the user has subscribed to,
+ *    identified via the `UsersForums` join table. Falls back to `defaultUser`
+ *    (anonymous) when no user is authenticated, producing an empty result.
+ *  - **Forum feed** (`getForumFeed`): posts from a single named forum filtered by
+ *    `Forums.display`, or from all forums when `"all"` is passed.
+ *
+ * @property {string}  users_id     UUID of the user whose subscriptions filter the home feed.
+ * @property {array}   feed         Lightweight row structs: id_short, created_at, created_utc
+ *                                  (and display for forum feeds). Populated by the get* methods.
+ * @property {numeric} feed_start   UNIX timestamp of the newest post in the current feed page.
+ * @property {numeric} feed_end     UNIX timestamp of the oldest post; used as the pagination cursor.
+ */
+class accessors="true" {
+
+	property name="users_id";
+	property name="feed";
+	property name="feed_start";
+	property name="feed_end";
+
+	/**
+	 * Initialises the Feed bean to its zero state.
+	 * Called automatically by AppContext's scanDirectory() on instantiation.
+	 *
+	 * @return {Feed} This instance.
+	 */
+	function init() {
+		variables.defaultUser = new "lib.AppContext"().get( "Config" ).getDefaultUser();
+		variables.users_id = "";
+		variables.feed = [];
+		variables.feed_start = 0;
+		variables.feed_end = 0;
+		return this;
+	}
+
+	/**
+	 * Returns a serialisable snapshot of the current feed state.
+	 * Consumed by the feed wire's `onMount` to pass the lightweight row array
+	 * and pagination cursors down to the view layer.
+	 *
+	 * @return {struct} Struct with keys:
+	 *   feed_start {numeric} UNIX timestamp of the newest post (pagination upper bound).
+	 *   feed_end   {numeric} UNIX timestamp of the oldest post (next-page cursor).
+	 *   feed       {array}   Lightweight row structs (id_short, created_at, created_utc).
+	 */
+	function getMemento(){
+		return {
+			"feed_start": variables.feed_start,
+			"feed_end": variables.feed_end,
+			"feed": variables.feed
+		}
+	}
+
+	// ========================================================================
+	// Home Feed
+	// ========================================================================
+
+	/**
+	 * Loads a page of the home feed for a user.
+	 *
+	 * Returns up to 20 non-deleted posts from forums the user has subscribed to
+	 * (via the `UsersForums` join table). Result rows are lightweight: only
+	 * `id_short`, `created_at`, and `created_utc` are selected. Call
+	 * `warmCache(getFeed(), users_id)` after this to pre-load full post data.
+	 *
+	 * Pass `before = 0` (default) for the first page; pass the current `feed_end`
+	 * value to load the next page. After each call `feed_start` and `feed_end`
+	 * reflect the bounds of the returned page.
+	 *
+	 * @param {string}  id      UUID of the authenticated user. Defaults to the anonymous
+	 *                          defaultUser, which produces an empty feed (no subscriptions).
+	 * @param {numeric} before  Cursor: load posts older than this UNIX timestamp.
+	 *                          Pass 0 (default) to load the first page.
+	 * @return {Feed} This instance.
+	 */
+	function getHomeFeed(required string id = variables.defaultUser, numeric before = 0){
+		variables.users_id = arguments.id;
+		variables.feed     = [];
+
+		var beforeClause = arguments.before ? "AND UNIX_TIMESTAMP(P.created_at) < :before" : "";
+
+		var sql = "
+			SELECT
+				P.id_short,
+				P.created_at,
+				UNIX_TIMESTAMP(P.created_at) AS created_utc
+			FROM Posts AS P
+			WHERE
+				P.deleted = 0
+				AND EXISTS (
+					SELECT 1
+					FROM UsersForums AS UF
+					WHERE UF.users_id = uuid_to_bin(:users_id)
+					AND UF.forums_id = P.forums_id
+				)
+				#beforeClause#
+			ORDER BY P.created_at DESC
+			LIMIT 20
+		";
+
+		var qParams = { "users_id": { value: arguments.id, cfsqltype: "cf_sql_varchar" } };
+		if ( arguments.before ) {
+			qParams[ "before" ] = { value: arguments.before, cfsqltype: "cf_sql_numeric" };
+		}
+
+		var dao_data = queryExecute( sql, qParams, { returnType: "array" } );
+		if ( dao_data.len() ) {
+			variables.feed.append( dao_data, true );
+		}
+		resetBounds();
+
+		return this;
+	}
+
+	// ========================================================================
+	// Forum Feed
+	// ========================================================================
+
+	/**
+	 * Loads a page of a forum or global feed.
+	 *
+	 * Returns up to 20 non-deleted posts. When `forum` is `"all"` the WHERE clause
+	 * omits the forum filter, returning posts from every forum the user can access.
+	 * Private forums are excluded from the "all" feed unless the user is subscribed.
+	 * Otherwise posts are filtered by `Forums.display = :forum` (case-sensitive display
+	 * name). Result rows include `id_short`, `created_at`, `created_utc`, `display`
+	 * (forum name), and `pinned` (0 or 1). Call `warmCache(getFeed(), users_id)` after
+	 * this to pre-load full post data.
+	 *
+	 * Pinned posts (specific forum only, first page only): up to 10 posts pinned in
+	 * that forum are prepended ahead of the regular page, ordered by most-recently
+	 * pinned first, and are excluded from the regular paginated results so they never
+	 * appear twice. This only applies when `forum != "all"` — the "all" feed and the
+	 * home feed are unaffected by pinning.
+	 *
+	 * Pass `before = 0` (default) for the first page; pass the current `feed_end`
+	 * value to load the next page. After each call `feed_start` and `feed_end`
+	 * reflect the bounds of the returned page.
+	 *
+	 * @param {string}  forum    Forum display name to filter by, or `"all"` for all forums.
+	 * @param {numeric} before   Cursor: load posts older than this UNIX timestamp.
+	 *                           Pass 0 (default) to load the first page.
+	 * @param {string}  users_id UUID of the current user for private forum filtering.
+	 *                           Defaults to empty string (treated as anonymous — no private access).
+	 * @return {Feed} This instance.
+	 */
+	function getForumFeed(required string forum, numeric before = 0, string users_id = ""){
+		variables.feed = [];
+		var effectiveUserId   = arguments.users_id.len() ? arguments.users_id : variables.defaultUser;
+		var isSpecificForum   = arguments.forum != "all";
+
+		var pinnedRows = [];
+		if ( isSpecificForum && !arguments.before ) {
+			pinnedRows = queryExecute(
+				"SELECT
+					P.id_short,
+					P.created_at,
+					F.display,
+					UNIX_TIMESTAMP(P.created_at) AS created_utc,
+					1 AS pinned
+				 FROM Posts P
+				 JOIN Forums F ON P.forums_id = F.id
+				 WHERE P.deleted = 0 AND P.pinned = 1 AND F.display = :forum
+				 ORDER BY P.pinned_at DESC
+				 LIMIT 10",
+				{ "forum": { value: arguments.forum, cfsqltype: "cf_sql_varchar" } },
+				{ returnType: "array" }
+			);
+		}
+
+		var forumClause   = isSpecificForum ? "AND F.display = :forum" : "";
+		var pinnedClause  = isSpecificForum ? "AND P.pinned = 0" : "";
+		var beforeClause  = arguments.before ? "AND UNIX_TIMESTAMP(P.created_at) < :before" : "";
+		// For f/all: exclude posts from private forums the user is not subscribed to
+		var privacyClause = !isSpecificForum
+			? "AND (F.is_private = 0 OR EXISTS (SELECT 1 FROM UsersForums UF WHERE UF.users_id = UUID_TO_BIN(:users_id) AND UF.forums_id = P.forums_id))"
+			: "";
+
+		var sql = "
+			SELECT
+				P.id_short,
+				P.created_at,
+				F.display,
+				UNIX_TIMESTAMP(P.created_at) AS created_utc,
+				0 AS pinned
+			FROM Posts P
+			JOIN Forums F ON P.forums_id = F.id
+			WHERE P.deleted = 0
+			#forumClause#
+			#pinnedClause#
+			#beforeClause#
+			#privacyClause#
+			ORDER BY P.created_at DESC
+			LIMIT 20
+		";
+
+		var qParams = {
+			"forum"    : { value: arguments.forum,  cfsqltype: "cf_sql_varchar" },
+			"users_id" : { value: effectiveUserId,  cfsqltype: "cf_sql_varchar" }
+		};
+		if ( arguments.before ) {
+			qParams[ "before" ] = { value: arguments.before, cfsqltype: "cf_sql_numeric" };
+		}
+
+		var dao_data = queryExecute( sql, qParams, { returnType: "array" } );
+		if ( pinnedRows.len() ) {
+			variables.feed.append( pinnedRows, true );
+		}
+		if ( dao_data.len() ) {
+			variables.feed.append( dao_data, true );
+		}
+		resetBounds();
+
+		return this;
+	}
+
+	// ========================================================================
+	// Top Viewed Feed
+	// ========================================================================
+
+	/**
+	 * Loads the top 20 posts by view count over the last 24 hours.
+	 *
+	 * Returns the same lightweight row shape as other feed methods
+	 * (id_short, created_at, created_utc) so warmCache() works unchanged.
+	 * Ordered by view_count DESC; no cursor pagination — the result is bounded.
+	 * Private forums are excluded unless the user is subscribed (same rule as getForumFeed).
+	 *
+	 * @param {string} users_id UUID of the current user for private-forum filtering and per-user vote lookups.
+	 * @return {Feed} This instance.
+	 */
+	function getTopViewedFeed( string users_id = "" ){
+		variables.users_id = arguments.users_id;
+		variables.feed     = [];
+
+		var effectiveUserId = arguments.users_id.len() ? arguments.users_id : variables.defaultUser;
+
+		var sql = "
+			SELECT
+				P.id_short,
+				P.created_at,
+				UNIX_TIMESTAMP(P.created_at) AS created_utc,
+				COUNT(*) AS view_count
+			FROM History H
+			JOIN Posts P   ON H.posts_id  = P.id
+			JOIN Forums F  ON P.forums_id = F.id
+			WHERE H.created_at >= NOW() - INTERVAL 24 HOUR
+			  AND P.deleted = 0
+			  AND (
+			    F.is_private = 0
+			    OR EXISTS (
+			        SELECT 1 FROM UsersForums UF
+			        WHERE UF.users_id  = UUID_TO_BIN(:users_id)
+			          AND UF.forums_id = F.id
+			    )
+			  )
+			GROUP BY P.id, P.id_short, P.created_at
+			ORDER BY view_count DESC
+			LIMIT 20
+		";
+
+		var dao_data = queryExecute( sql, { users_id: { value: effectiveUserId, cfsqltype: "cf_sql_varchar" } }, { returnType: "array" } );
+		if ( dao_data.len() ) {
+			variables.feed.append( dao_data, true );
+		}
+		resetBounds();
+
+		return this;
+	}
+
+	// ========================================================================
+	// Search Feed
+	// ========================================================================
+
+	/**
+	 * Cursor-paginated post search using MySQL FULLTEXT BOOLEAN MODE.
+	 * Excludes deleted posts and private forums the user is not subscribed to.
+	 *
+	 * @param {string}  query    Raw search string (bound parameter — never interpolated).
+	 * @param {numeric} before   Cursor UNIX timestamp; 0 = first page.
+	 * @param {string}  users_id Current user UUID for private-forum filtering.
+	 * @return {Feed} This instance.
+	 */
+	function getFeedBySearch( required string query, numeric before = 0, string users_id = "", string forum = "" ){
+		variables.feed = [];
+		var effectiveUserId = arguments.users_id.len() ? arguments.users_id : variables.defaultUser;
+		var beforeClause    = arguments.before ? "AND UNIX_TIMESTAMP(P.created_at) < :before" : "";
+		var forumClause     = arguments.forum.len() ? "AND F.display = :forum" : "";
+
+		var sql = "
+			SELECT
+				P.id_short,
+				P.created_at,
+				F.display,
+				UNIX_TIMESTAMP(P.created_at) AS created_utc
+			FROM Posts P
+			JOIN Forums F ON P.forums_id = F.id
+			WHERE P.deleted = 0
+			  AND F.deleted = 0
+			  AND MATCH(P.title, P.body) AGAINST (:query IN BOOLEAN MODE)
+			  AND (
+			      F.is_private = 0
+			      OR EXISTS (
+			          SELECT 1 FROM UsersForums UF
+			          WHERE UF.users_id = UUID_TO_BIN(:users_id)
+			          AND UF.forums_id = P.forums_id
+			      )
+			  )
+			  #beforeClause#
+			  #forumClause#
+			ORDER BY P.created_at DESC
+			LIMIT 20
+		";
+
+		var qParams = {
+			"query"    : { value: arguments.query,      cfsqltype: "cf_sql_varchar" },
+			"users_id" : { value: effectiveUserId,      cfsqltype: "cf_sql_varchar" }
+		};
+		if ( arguments.before ) {
+			qParams[ "before" ] = { value: arguments.before, cfsqltype: "cf_sql_numeric" };
+		}
+		if ( arguments.forum.len() ) {
+			qParams[ "forum" ] = { value: arguments.forum, cfsqltype: "cf_sql_varchar" };
+		}
+
+		var dao_data = queryExecute( sql, qParams, { returnType: "array" } );
+		if ( dao_data.len() ) {
+			variables.feed.append( dao_data, true );
+		}
+		resetBounds();
+		return this;
+	}
+
+	// ========================================================================
+	// Cache Warm-up
+	// ========================================================================
+
+	/**
+	 * Pre-populates dismalCache for every post in the feed in a single round-trip.
+	 *
+	 * Builds a parameterised `IN (:sid0, :sid1, ...)` clause from the supplied feed
+	 * items and executes one batch query that retrieves: the full post struct,
+	 * net vote score (SUM of Votes.vote), per-user vote for `users_id`, and
+	 * non-deleted comment count. Results are written into dismalCache under the
+	 * exact keys that downstream lookups consult:
+	 *
+	 *   post:{id_short}                          — consumed by Post.getByIdShort()
+	 *   vote:stats:{id_short}                    — consumed by Vote.getScore() / getUpvoteCount()
+	 *   uservote:{userShort}:{id_short}           — consumed by Vote.getUserVote()
+	 *   bookmark:{userShort}:{id_short}           — consumed by Bookmark.isBookmarked()
+	 *
+	 * Subsequent item-wire renders for this feed page therefore serve entirely from
+	 * warm cache rather than issuing one DB query per post.
+	 *
+	 * No-op when `feedItems` is empty.
+	 *
+	 * @param {array}  feedItems  Feed row structs from get*Feed(); must have `id_short`.
+	 * @param {string} users_id   UUID of the current user for per-user vote lookups.
+	 */
+	function warmCache(required array feedItems, required string users_id){
+		if ( !arguments.feedItems.len() ) return;
+
+		// Build a safe IN clause using individual named params (:sid0, :sid1, ...)
+		var qParams = {
+			"users_id": { value: arguments.users_id, cfsqltype: "cf_sql_varchar" }
+		};
+		var placeholders = [];
+		arguments.feedItems.each( (item, i) => {
+			qParams[ "sid#i#" ] = { value: item.id_short, cfsqltype: "cf_sql_varchar" };
+			placeholders.append( ":sid#i#" );
+		});
+		var inClause = placeholders.toList();
+
+		var sql = "
+			SELECT
+				BIN_TO_UUID(P.id)            AS id,
+				P.id_short,
+				BIN_TO_UUID(P.forums_id)     AS forums_id,
+				F.display,
+				BIN_TO_UUID(P.users_id)      AS users_id,
+				U.user_name,
+				P.post_type,
+				P.title,
+				P.body,
+				P.deleted,
+				P.pinned,
+				P.pinned_at,
+				P.created_at,
+				P.updated_at,
+				UNIX_TIMESTAMP(P.created_at) AS created_utc,
+				UNIX_TIMESTAMP(P.updated_at) AS updated_utc,
+				COALESCE(CC.comment_count, 0)  AS comments,
+				COALESCE(VS.vote_score,    0)  AS vote_score,
+				COALESCE(VU.user_vote,     0)  AS user_vote,
+				COALESCE(BK.user_bookmark, 0)  AS user_bookmark
+			FROM Posts P
+			LEFT JOIN Forums F ON F.id = P.forums_id
+			LEFT JOIN Users U ON U.id = P.users_id
+			LEFT JOIN (
+				SELECT posts_id, COUNT(*) AS comment_count
+				FROM Comments
+				WHERE deleted = 0
+				  AND posts_id IN (SELECT id FROM Posts WHERE id_short IN (#inClause#))
+				GROUP BY posts_id
+			) CC ON CC.posts_id = P.id
+			LEFT JOIN (
+				SELECT posts_id, SUM(vote) AS vote_score
+				FROM Votes
+				WHERE posts_id IN (SELECT id FROM Posts WHERE id_short IN (#inClause#))
+				GROUP BY posts_id
+			) VS ON VS.posts_id = P.id
+			LEFT JOIN (
+				SELECT posts_id, vote AS user_vote
+				FROM Votes
+				WHERE users_id = UUID_TO_BIN(:users_id)
+				  AND posts_id IN (SELECT id FROM Posts WHERE id_short IN (#inClause#))
+			) VU ON VU.posts_id = P.id
+			LEFT JOIN (
+				SELECT posts_id, 1 AS user_bookmark
+				FROM Bookmarks
+				WHERE users_id = UUID_TO_BIN(:users_id)
+				  AND posts_id IN (SELECT id FROM Posts WHERE id_short IN (#inClause#))
+			) BK ON BK.posts_id = P.id
+			WHERE P.id_short IN (#inClause#)
+		";
+
+		var rows      = queryExecute( sql, qParams, { returnType: "array" } );
+		var userShort = left( arguments.users_id, 8 );
+
+		rows.each( (row) => {
+			// post struct — matches what Post.getByIdShort() caches
+			cache("dismalCache").set( "post:#row.id_short#", {
+				id:          row.id,
+				id_short:    row.id_short,
+				forums_id:   row.forums_id,
+				display:     row.display,
+				users_id:    row.users_id,
+				user_name:   row.user_name,
+				post_type:   row.post_type,
+				title:       row.title,
+				body:        row.body,
+				deleted:     row.deleted,
+				pinned:      row.pinned,
+				pinned_at:   row.pinned_at,
+				created_at:  row.created_at,
+				updated_at:  row.updated_at,
+				created_utc: row.created_utc,
+				updated_utc: row.updated_utc,
+				comments:    row.comments
+			});
+			// vote stats — matches what Vote.getVoteStats() caches (upcount populated on demand)
+			cache("dismalCache").set( "vote:stats:#row.id_short#", { score: row.vote_score, upcount: 0 } );
+			// per-user vote (Vote.getUserVote) and bookmark flag (Bookmark.isBookmarked) — separate keys to avoid partial-write races
+			cache("dismalCache").set( "uservote:#userShort#:#row.id_short#", row.user_vote );
+			cache("dismalCache").set( "bookmark:#userShort#:#row.id_short#", row.user_bookmark == 1 ? true : false );
+		});
+	}
+
+	// ========================================================================
+	// Private
+	// ========================================================================
+
+	/**
+	 * Derives `feed_start` and `feed_end` from the current `variables.feed` array.
+	 *
+	 * `feed_start` is set to the `created_utc` of the first (newest) item;
+	 * `feed_end` is set to the `created_utc` of the last (oldest) item.
+	 * Both are set to `""` when the feed is empty so callers can test `feed_end.len()`
+	 * to determine whether a next page exists.
+	 *
+	 * Called by `getHomeFeed()` and `getForumFeed()` after every page load.
+	 */
+	private function resetBounds(){
+		if ( variables.feed.len() ) {
+			variables.feed_start = variables.feed[ 1 ].created_utc;
+			variables.feed_end   = variables.feed[ variables.feed.len() ].created_utc;
+		} else {
+			variables.feed_start = "";
+			variables.feed_end   = "";
+		}
+	}
+
+}

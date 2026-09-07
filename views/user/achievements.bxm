@@ -1,0 +1,82 @@
+<bx:output>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-2 order-1 order-lg-2">
+			#view( "user/header" )#
+
+			<div class="c-achievements" data-achievements-root>
+				<bx:if data.profileAchievements.len()>
+
+					<!--- Keyed by Achievements.metric (the real column — confirmed via the local `dismal`
+					      database), not the achievement's slug, which reads similarly but doesn't match:
+					      e.g. slug "streaks" has metric "streak_days". A prior version of this map was
+					      keyed by slug-shaped guesses that only matched likes_received/likes_given, so
+					      every other achievement silently fell back to the generic ★ below. --->
+					<bx:set iconMap = {
+						"account_days": "⧗", "contribution_count": "✦", "post_count": "✎",
+						"link_count": "⛓", "comment_count": "⟁", "likes_received": "◈",
+						"likes_given": "❋", "reply_count": "↳", "streak_days": "◉",
+						"load_more_count": "⇓", "account_days_max_posts": "◌", "absence_days": "⟳"
+					}>
+					<bx:set tierRoman  = [ "I", "II", "III", "IV", "V" ]>
+					<bx:set tierRarity = [ "Common", "Uncommon", "Rare", "Epic", "Legendary" ]>
+
+					<bx:set tierHex = [ "78716c", "059669", "0284c7", "7c3aed", "d97706" ]>
+					<bx:set tierRgb = [ "120,113,108", "5,150,105", "2,132,199", "124,58,237", "217,119,6" ]>
+					<script type="application/json" id="ach-data">#jsonSerialize({
+						iconMap: iconMap,
+						tierRoman: tierRoman,
+						tierRarity: tierRarity,
+						tierHex: tierHex,
+						tierRgb: tierRgb,
+						achievements: data.profileAchievements,
+						allTierMap: data.allTierMap
+					})#</script>
+
+					<div data-ach-grid>
+						<p class="c-achievements__intro">
+							The System tracks everything. It always has. Below is what it has decided to tell you about.
+						</p>
+
+						<div class="c-achievements__grid">
+							<bx:loop array="#data.profileAchievements#" index="ach">
+								<bx:if ach.secret>
+									<bx:continue>
+								</bx:if>
+								<bx:set icon = iconMap.keyExists( ach.metric ) ? iconMap[ ach.metric ] : "★">
+								<bx:set tierIdx = ach.current_tier>
+								<div class="c-ach-card" data-ach-card data-ach-slug="#encodeForHTMLAttribute( ach.slug )#" role="button" tabindex="0">
+									<div class="c-ach-card__icon">#icon#</div>
+									<div class="c-ach-card__category">#encodeForHTML(ach.category)#</div>
+									<div class="c-ach-card__title">#encodeForHTML(ach.title)#</div>
+									<div class="c-ach-card__tier-bar">
+										<bx:loop from="1" to="5" index="pip">
+											<div class="c-ach-card__tier-pip c-tier-pip--#pip# #pip lte tierIdx ? 'c-ach-card__tier-pip--earned' : 'c-ach-card__tier-pip--locked'#"></div>
+										</bx:loop>
+									</div>
+									<div class="c-ach-card__meta">
+										Tier #tierRoman[ tierIdx ]# &mdash; #tierRarity[ tierIdx ]#
+									</div>
+								</div>
+							</bx:loop>
+						</div>
+					</div>
+
+					<div data-ach-detail style="display:none;"></div>
+				<bx:else>
+					<div class="c-achievements__empty">
+						<i class="bi bi-trophy" aria-hidden="true"></i>
+						No achievements earned yet. Keep participating and the System will notice.
+					</div>
+				</bx:if>
+			</div>
+		</div>
+		<div class="d-none d-lg-block col-lg-3 p-2 order-lg-3">
+			#view( "widgets/user_profile" )#
+		</div>
+	</div>
+</div>
+</bx:output>

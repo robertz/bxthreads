@@ -1,0 +1,60 @@
+<bx:output>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-2 order-1 order-lg-2">
+
+			<div class="c-settings">
+				<h2 class="mb-4">Account Settings</h2>
+				<p class="text-muted mb-4">Signed in as <strong>#encodeForHTML( data.currentUser.user_name )#</strong></p>
+
+				<div class="card bg-dark border-secondary mb-4">
+					<div class="card-body">
+						<h5 class="card-title">Email</h5>
+						<p class="form-control-plaintext text-muted mb-0">#encodeForHTML( data.currentUser.email )#</p>
+					</div>
+				</div>
+
+				<div class="card bg-dark border-secondary mb-4">
+					<div class="card-body">
+						<h5 class="card-title">Password</h5>
+						<form data-settings-password-form>
+							<div class="mb-3">
+								<input
+									type="password"
+									name="current_password"
+									class="form-control mb-2"
+									placeholder="Current password"
+									autocomplete="current-password"
+									required
+								/>
+								<input
+									type="password"
+									name="new_password"
+									class="form-control mb-2"
+									placeholder="New password (min 8 characters)"
+									autocomplete="new-password"
+									minlength="8"
+									required
+								/>
+								<input
+									type="password"
+									name="confirm_password"
+									class="form-control"
+									placeholder="Confirm new password"
+									autocomplete="new-password"
+									required
+								/>
+							</div>
+							<p data-settings-status class="mb-2"></p>
+							<button type="submit" class="btn btn-primary">Change password</button>
+						</form>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

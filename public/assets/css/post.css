@@ -1,0 +1,314 @@
+/* ── Post detail container ── */
+.c-post__container {
+	position: relative;
+	margin-bottom: 16px;
+	background-color: var(--ui-surface-1);
+	border: 1px solid var(--ui-border-subtle);
+	border-radius: var(--ui-radius-md);
+	padding: 18px 18px 10px;
+	box-shadow: var(--ui-shadow-sm);
+	overflow: hidden;
+}
+
+/* Same persistent top accent bar as the feed cards */
+.c-post__container::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 0;
+	height: 3px;
+	background: var(--gradient-diagonal);
+}
+
+/* ── Header: forum · author · timestamp — terminal log line ── */
+.c-post__header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 12px;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	line-height: 1;
+	flex-wrap: wrap;
+}
+
+a.c-post__forum,
+a.c-post__forum:visited {
+	color: var(--color-white);
+	text-decoration: none;
+	font-weight: 600;
+	font-size: 11.5px;
+}
+
+a.c-post__forum:hover {
+	color: var(--color-white);
+	text-decoration: underline;
+}
+
+.c-post__private-lock {
+	display: inline-block;
+	font-size: 10px;
+	color: var(--post-link-text);
+	background: rgba(var(--accent-rgb), 0.12);
+	border: 1px solid rgba(var(--accent-rgb), 0.3);
+	border-radius: 4px;
+	padding: 1px 5px;
+	vertical-align: middle;
+	line-height: 1.4;
+}
+
+.c-post__meta-sep {
+	color: rgba(var(--accent-rgb), 0.45);
+	font-size: 10px;
+}
+
+.c-post__meta {
+	color: var(--text-secondary);
+	font-size: 12px;
+}
+
+a.c-post__author,
+a.c-post__author:visited {
+	color: var(--color-white);
+	text-decoration: none;
+	font-weight: 500;
+}
+
+a.c-post__author:hover {
+	color: var(--color-white);
+	text-decoration: underline;
+}
+
+.c-post__timestamp {
+	color: var(--text-secondary);
+	font-size: 11.5px;
+}
+
+.c-post__edited {
+	color: var(--text-muted);
+	font-size: 12px;
+	font-style: italic;
+}
+
+/* ── Title — editorial display face ── */
+.c-post__title {
+	font-family: var(--font-display);
+	font-size: 26px;
+	font-weight: 700;
+	line-height: 1.22;
+	letter-spacing: -0.015em;
+	color: var(--color-white);
+	margin: 0 0 12px;
+}
+
+/* ── Body ── */
+.c-post__body {
+	padding: 0;
+}
+
+.c-post__link-body {
+	padding: 0;
+}
+
+/* ── Link card ── */
+.c-post-card {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	overflow-wrap: break-word;
+	background-color: transparent;
+	border: 1px solid var(--ui-border-subtle);
+	border-radius: var(--ui-radius-sm);
+	overflow: hidden;
+}
+
+.c-post-card__img {
+	width: 100%;
+	max-height: 400px;
+	object-fit: contain;
+	display: block;
+}
+
+.c-post-card__footer {
+	padding: 12px 16px;
+	background-color: rgba(0,0,0,0.15);
+}
+
+.c-post-card__desc {
+	font-size: 13px;
+	color: rgba(255,255,255,0.6);
+	margin: 0 0 8px;
+	line-height: 1.5;
+}
+
+.c-post-card__domain {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	font-size: 12px;
+}
+
+a.c-post__domain-link {
+	color: var(--post-link-text);
+	text-decoration: none;
+}
+
+a.c-post__domain-link:hover {
+	text-decoration: underline;
+}
+
+/* ── Vote cluster pill ── */
+.c-post__vote-pill {
+	display: inline-flex;
+	align-items: center;
+	border: 1px solid rgba(255,255,255,0.22);
+	border-radius: 999px;
+	overflow: hidden; /* clips the vote hover bg to pill shape */
+	background: rgba(255,255,255,0.03);
+}
+
+/* ── Action buttons / stat chips (shared between post detail views) ── */
+.c-post__action {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: 28px;
+	box-sizing: border-box;
+	background: none;
+	border: 1px solid rgba(255,255,255,0.1);
+	padding: 0 10px;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	font-weight: 500;
+	color: rgba(255,255,255,0.50);
+	cursor: default;
+	border-radius: 999px;
+	transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease;
+}
+
+button.c-post__action,
+a.c-post__action {
+	cursor: pointer;
+}
+
+.c-post__action:hover {
+	background-color: rgba(255,255,255,0.06);
+	border-color: rgba(255,255,255,0.18);
+	color: rgba(255,255,255,0.65);
+	text-decoration: none;
+}
+
+.c-post__action--danger {
+	color: rgba(241, 65, 108, 0.55);
+	border-color: rgba(241, 65, 108, 0.2);
+}
+
+.c-post__action--danger:hover {
+	background-color: rgba(241, 65, 108, 0.08);
+	border-color: rgba(241, 65, 108, 0.4);
+	color: #f1416c;
+}
+
+.c-post__action i {
+	font-size: 16px;
+	line-height: 1;
+}
+
+.c-post__action--live {
+	color: var(--accent);
+	border-color: rgba(var(--accent-rgb), 0.3);
+}
+
+.c-post__action--live i {
+	font-size: 7px;
+	animation: c-post__action--live-pulse 2s ease-in-out infinite;
+}
+
+@keyframes c-post__action--live-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.35; }
+}
+
+/* Footer pill: normalise vote-arrow size to match action icons */
+.c-post__vote-pill .c-vote {
+	min-width: 28px;
+	min-height: 28px;
+	padding: 6px;
+}
+
+.c-post__vote-pill .c-vote i {
+	font-size: 16px;
+}
+
+/* ── Post content (self-text) ── */
+.c-post__body .post {
+	font-size: 14px;
+	line-height: 1.6;
+	color: rgba(255,255,255,0.85);
+}
+
+/* ── Link commentary (optional body text below link card) ── */
+.c-post__link-commentary {
+	margin-top: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--ui-border-subtle);
+	font-size: 14px;
+	line-height: 1.6;
+	color: rgba(255,255,255,0.85);
+}
+
+.c-post__link-commentary p:last-child {
+	margin-bottom: 0;
+}
+
+/* ── Inline post edit form ── */
+
+.c-post__edit-form {
+	margin-top: 8px;
+}
+
+.c-post__edit-textarea {
+	display: block;
+	width: 100%;
+	padding: 10px 14px;
+	font-size: 0.875rem;
+	font-family: inherit;
+	line-height: 1.55;
+	color: #d7dadc;
+	background: var(--ui-surface-2, #242527);
+	border: 1px solid var(--main-border-color);
+	border-radius: var(--ui-radius-sm);
+	resize: vertical;
+	min-height: 160px;
+	outline: none;
+	transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.c-post__edit-textarea::placeholder {
+	color: var(--text-placeholder);
+}
+
+.c-post__edit-textarea:focus {
+	border-color: var(--post-link-text);
+	box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.15);
+}
+
+.c-post__edit-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 10px;
+}
+
+/* ── Footer ── */
+
+.c-post__footer {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 0 8px;
+	flex-wrap: wrap;
+}
+

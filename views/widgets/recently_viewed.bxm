@@ -1,0 +1,46 @@
+<bx:output>
+<bx:set showRecent = data.isIdentified && data.userBean.getRecentlyViewedPosts().len()>
+
+<bx:if showRecent>
+	<h3 class="c-recent__heading">Recently Viewed</h3>
+
+	<bx:loop array="#data.userBean.getRecentlyViewedPosts()#" index="post">
+		<div class="c-recent__item">
+			<div class="c-recent__header">
+				<a href="/f/#encodeForURL(post.forum)#" class="c-recent__forum">f/#encodeForHTML(post.forum)#</a>
+				<span class="c-recent__sep">&bull;</span>
+				<span class="c-recent__timestamp ts-display" data-ts="#encodeForHTMLAttribute(post.created_utc)#">#momentFrom(post.created_utc)#</span>
+			</div>
+			<a href="/f/#encodeForURL(post.forum)#/comments/#encodeForURL(post.id_short)#/#encodeForURL(slugifyText(post.title))#" class="c-recent__title">#encodeForHTML(post.title)#</a>
+			<div class="c-recent__footer">
+				<span class="c-vote__score">#encodeForHTML(post.vote_score)#</span>
+				<i class="bi bi-arrow-up-short" aria-hidden="true" style="font-size:16px;color:rgba(255,255,255,0.45)"></i>
+				<span class="c-recent__sep">&bull;</span>
+				<a href="/f/#encodeForURL(post.forum)#/comments/#encodeForURL(post.id_short)#/#encodeForURL(slugifyText(post.title))#">
+					<i class="bi bi-chat-right-text" aria-hidden="true"></i>
+					#encodeForHTML(post.comment_count)# #post.comment_count == 1 ? "Comment" : "Comments"#
+				</a>
+			</div>
+		</div>
+	</bx:loop>
+<bx:else>
+	<!--- Anonymous visitors, or an identified user with no view history yet, previously saw a
+	      completely blank sidebar here — this gives the space a job either way. --->
+	<bx:set popularForums = new "models.dao.DismalDAO"().getPopularForums( 5 )>
+	<bx:if popularForums.len()>
+		<h3 class="c-recent__heading">Popular Forums</h3>
+		<bx:loop array="#popularForums#" index="pf">
+			<div class="c-recent__item">
+				<a href="/f/#encodeForURL(pf.display)#" class="c-recent__title">f/#encodeForHTML(pf.display)#</a>
+				<bx:if len( pf.about ?: "" )>
+					<div class="text-muted small">#encodeForHTML(pf.about)#</div>
+				</bx:if>
+				<div class="c-recent__footer">
+					<span>#encodeForHTML(pf.subscriber_count)#</span>
+					<span class="text-muted small">&nbsp;#pf.subscriber_count == 1 ? "member" : "members"#</span>
+				</div>
+			</div>
+		</bx:loop>
+	</bx:if>
+</bx:if>
+</bx:output>

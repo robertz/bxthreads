@@ -1,0 +1,20 @@
+/**
+ * Standalone TestBox CLI runner — no ColdBox/servlet lifecycle involved (boxlang-express has
+ * none to hook into), just a plain BoxLang script invoked directly:
+ *   boxlang --bx-config ./boxlang.json tests/runner.bxs
+ * Exits non-zero on any failure/error so it can gate CI.
+ */
+testbox = new "testbox.system.TestBox"( directory = "tests.specs", recurse = true, reporter = "text" );
+report  = testbox.run();
+results = testbox.getResult();
+
+println( report );
+
+if ( results.getTotalFail() > 0 || results.getTotalError() > 0 ) {
+	println( "FAILED: " & results.getTotalFail() & " failing, " & results.getTotalError() & " errored, " & results.getTotalPass() & " passing" );
+	// BoxLang CLI has no systemExit()/exit-code BIF — an uncaught exception is the only way to
+	// make the process exit non-zero, which is what CI needs to actually gate on this script.
+	throw( message = "TestBox run failed: " & results.getTotalFail() & " failing, " & results.getTotalError() & " errored" );
+} else {
+	println( "PASSED: " & results.getTotalPass() & " passing" );
+}

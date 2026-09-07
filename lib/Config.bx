@@ -1,0 +1,29 @@
+/**
+ * App-level settings, read once at boot. Mirrors config/Coldbox.bx's `variables.settings` block
+ * from the source app, minus anything that's now a real secret (those live in .env, see
+ * boxlang.json's datasource interpolation).
+ */
+class accessors="true" {
+
+	property name="defaultUser";
+	property name="apiKey";
+	property name="siteUrl";
+	property name="siteName";
+	property name="env";
+	property name="port";
+
+	function init() {
+		// Sentinel "no one" user UUID — anonymous sessions default to this id. Not a secret;
+		// it's just a seeded row in the Users table, kept out of .env deliberately.
+		variables.defaultUser = "010f3a4c-a127-11ef-b36c-b30d25967fba";
+		variables.apiKey      = getSystemSetting( "API_KEY", "" );
+		variables.siteUrl     = getSystemSetting( "SITE_URL", "http://localhost:3000" );
+		// Placeholder brand name — kept as an env-overridable setting rather than hardcoded
+		// throughout views/handlers, so a rename is a config change, not a code hunt.
+		variables.siteName = getSystemSetting( "SITE_NAME", "bxThreads" );
+		variables.env      = getSystemSetting( "APP_ENV", "development" );
+		variables.port     = getSystemSetting( "APP_PORT", "3000" );
+		return this;
+	}
+
+}

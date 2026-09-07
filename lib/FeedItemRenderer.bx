@@ -1,0 +1,272 @@
+/**
+ * Renders one feed/list post card as an HTML fragment — the real `.c-feed-post` markup/CSS
+ * classes ported from the source app's `wires/feed/item.bxm`, shared by every view that lists
+ * posts (views/feed/forum.bxm, views/feed/topviewed.bxm, views/search/results.bxm,
+ * views/user/index.bxm, views/user/bookmarks.bxm) instead of each duplicating its own ad-hoc,
+ * unstyled inline-`style=` card (which is what every one of those views did through Phase 5/8 —
+ * the `.c-feed-post`/`.c-vote`/`.c-post__action` classes those placeholders referenced exist in
+ * the ported CSS, but the placeholder markup never actually matched the class names/structure
+ * those rules target, so real styling never applied).
+ *
+ * Not a `#view(...)#` partial — a partial-include closure can't see an ambient loop variable
+ * from its caller, only what renderToString() itself closed over (see lib/View.bx's own notes).
+ * This is a plain class method instead, called directly with the data it needs, matching
+ * lib/CommentRenderer.bx's precedent exactly (including duplicating the small pure helpers it
+ * needs rather than sharing lib/ViewHelpers.bxm's versions, which only exist inside a view's own
+ * render scope).
+ *
+ * `post` fields consumed (all but id_short/title/forum/user_name/created_utc/post_type are
+ * optional — callers that only have a thinner row, like bookmarks/user-index which start from
+ * just an id_short, should merge in what they can and leave the rest to default):
+ *   id_short, title, forum (display), is_private, user_name, created_utc, post_type, body,
+ *   link_url, link_description, link_image, vote_score, comment_count, view_count, pinned,
+ *   forums_id, user_vote, is_bookmarked
+ */
+class {
+
+	private function momentFrom( required any target ) {
+		var Instant  = createObject( "java", "java.time.Instant" );
+		var ZoneId   = createObject( "java", "java.time.ZoneId" );
+		var Duration = createObject( "java", "java.time.Duration" );
+		var zone = ZoneId.of( "UTC" );
+		var n  = javacast( "long", arguments.target );
+		var ms = ( n GT 9999999999 ) ? n : n * 1000;
+		var t  = Instant.ofEpochMilli( javacast( "long", ms ) ).atZone( zone );
+		var seconds = Duration.between( t, Instant.now().atZone( zone ) ).getSeconds();
+		var absSec  = abs( seconds );
+		var days    = absSec / 86400;
+		if      ( absSec < 45 )     return "just now";
+		else if ( absSec < 90 )     return "1m";
+		else if ( absSec < 2700 )   return round( absSec / 60 ) & "m";
+		else if ( absSec < 5400 )   return "1h";
+		else if ( absSec < 79200 )  return round( absSec / 3600 ) & "h";
+		else if ( absSec < 129600 ) return "1d";
+		else if ( days   < 26 )     return round( days ) & "d";
+		else if ( days   < 45 )     return "1mo";
+		else if ( days   < 320 )    return round( days / 30 ) & "mo";
+		else if ( days   < 548 )    return "1y";
+		else                        return round( days / 365 ) & "y";
+	}
+
+	// Named slugifyText, not slugify — this BoxLang install has a built-in global BIF named
+	// `slugify` that silently wins over a same-named user function/method in every context tried,
+	// including a class's own private method called from within that same class (confirmed via
+	// tests/specs/unit/ViewHelpersSpec.bx and lib/ViewHelpers.bxm's own note on this).
+	private function slugifyText( required string str ) {
+		var slug = lCase( trim( arguments.str ) );
+		slug     = replaceList( slug, "ä,ü,ö,ß", "ae,ue,oe,ss" );
+		slug     = reReplace( slug, "[^a-z0-9\s-]", "-", "all" );
+		slug     = reReplace( slug, "[\s-]+", "-", "all" );
+		return reReplace( slug, "^-+|-+$", "", "all" );
+	}
+
+	private function getBaseDomain( required string urlString ) {
+		var host = "";
+		var u = trim( arguments.urlString );
+		if ( NOT reFind( "^[a-zA-Z][a-zA-Z0-9+\-.]*://", u ) ) {
+			u = "http://" & u;
+		}
+		try {
+			host = createObject( "java", "java.net.URL" ).init( u ).getHost();
+		} catch ( any e ) {
+			var match = reFindNoCase( "^(?:https?://)?([^/:?##]+)", arguments.urlString, 1, true );
+			if ( arrayLen( match.pos ) >= 2 ) {
+				host = mid( arguments.urlString, match.pos[2], match.len[2] );
+			}
+		}
+		host = trim( host );
+		if ( host EQ "" ) return "";
+		var multiTLDs = [ "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "ne.jp", "or.jp", "com.au", "net.au", "org.au", "co.nz", "net.nz", "co.kr", "ne.kr" ];
+		var parts = listToArray( host, "." );
+		for ( var tld in multiTLDs ) {
+			if ( right( host, len( tld ) ) == tld ) {
+				var labels = listToArray( host, "." );
+				var tldSegments = listToArray( tld, "." );
+				if ( arrayLen( labels ) > arrayLen( tldSegments ) ) {
+					return labels[ arrayLen( labels ) - arrayLen( tldSegments ) ] & "." & tld;
+				}
+			}
+		}
+		if ( arrayLen( parts ) >= 2 ) {
+			return parts[ arrayLen( parts ) - 1 ] & "." & parts[ arrayLen( parts ) ];
+		}
+		return host;
+	}
+
+	// Kept as its own private copy rather than calling lib/ViewHelpers.bxm's identical
+	// youtubeId() — that include only exists inside a view's own render scope, not a plain
+	// class (same reasoning as this file's momentFrom()/enhanceAnchorsInHtml() duplicates).
+	private function youtubeId( required string urlString ) {
+		var u = trim( arguments.urlString );
+		if ( !len( u ) ) return "";
+		var pattern = "(?:youtube(?:-nocookie)?\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|live/)|youtu\.be/)([\w-]{11})";
+		var match = reFindNoCase( pattern, u, 1, true );
+		if ( arrayLen( match.pos ) >= 2 ) {
+			return mid( u, match.pos[2], match.len[2] );
+		}
+		return "";
+	}
+
+	// See lib/ViewHelpers.bxm::vimeoId() for the full explanation — same duplication reasoning
+	// as youtubeId() above.
+	private function vimeoId( required string urlString ) {
+		var u = trim( arguments.urlString );
+		if ( !len( u ) ) return "";
+		var pattern = "vimeo\.com/(?:channels/[\w-]+/|groups/[\w-]+/videos/|video/)?(\d+)(?:/([\w-]+))?";
+		var match = reFindNoCase( pattern, u, 1, true );
+		if ( arrayLen( match.pos ) >= 2 && match.len[2] > 0 ) {
+			var id = mid( u, match.pos[2], match.len[2] );
+			if ( arrayLen( match.pos ) >= 3 && match.len[3] > 0 ) {
+				return id & "/" & mid( u, match.pos[3], match.len[3] );
+			}
+			return id;
+		}
+		return "";
+	}
+
+	// See lib/ViewHelpers.bxm::twitchClipSlug() for the full explanation — same duplication
+	// reasoning as youtubeId()/vimeoId() above.
+	private function twitchClipSlug( required string urlString ) {
+		var u = trim( arguments.urlString );
+		if ( !len( u ) ) return "";
+		var pattern = "(?:clips\.twitch\.tv/|twitch\.tv/[\w-]+/clip/)([\w-]+)";
+		var match = reFindNoCase( pattern, u, 1, true );
+		if ( arrayLen( match.pos ) >= 2 && match.len[2] > 0 ) {
+			return mid( u, match.pos[2], match.len[2] );
+		}
+		return "";
+	}
+
+	private function goUrl( required string href ) {
+		var u = trim( arguments.href );
+		if ( !len( u ) ) return "";
+		return "/go/" & toBase64( u );
+	}
+
+	private function enhanceAnchorsInHtml( required string html ) {
+		return new "lib.AppContext"().get( "UtilityService" ).enhanceAnchorsInHtml( arguments.html );
+	}
+
+	function renderCard( required struct post, required string currentUserId, boolean isModerator = false ) {
+		var p          = arguments.post;
+		var isPinned   = p.pinned ?: false;
+		var isPrivate  = p.is_private ?: false;
+		var postType   = p.post_type ?: "post";
+		var voteScore  = p.vote_score ?: 0;
+		var commentCnt = p.comment_count ?: 0;
+		var viewCount  = p.view_count ?: 0;
+		var userVote   = p.user_vote ?: 0;
+		var isBookmarked = p.is_bookmarked ?: false;
+		var isIdentified = len( arguments.currentUserId ) > 0;
+		var postUrl    = "/f/" & encodeForURL( p.forum ) & "/comments/" & encodeForURL( p.id_short ) & "/" & encodeForURL( slugifyText( p.title ) );
+
+		var scoreClass = userVote == 1 ? "c-vote__score--up" : ( userVote == -1 ? "c-vote__score--down" : "" );
+		var upClass    = userVote == 1 ? "c-vote--active-up" : "";
+		var downClass  = userVote == -1 ? "c-vote--active-down" : "";
+
+		var html = '<article class="c-feed-post' & ( isPinned ? " c-feed-post--pinned" : "" ) & '" data-post-id="' & encodeForHTMLAttribute( p.id_short ) & '">';
+
+		html &= '<div class="c-feed-post__header">';
+		if ( isPinned ) {
+			html &= '<span class="c-feed-post__pin-badge"><i class="bi bi-pin-angle-fill" aria-hidden="true"></i> Pinned</span>';
+		}
+		html &= '<a href="/f/' & encodeForURL( p.forum ) & '" class="c-feed-post__forum">f/' & encodeForHTML( p.forum ) & '</a>';
+		if ( isPrivate ) {
+			html &= '<i class="bi bi-lock-fill c-feed-post__private-lock" aria-label="Private forum"></i>';
+		}
+		html &= '<span class="c-feed-post__meta-sep">&bull;</span>';
+		html &= '<a href="/u/' & encodeForURL( p.user_name ) & '" class="c-feed-post__author">u/' & encodeForHTML( p.user_name ) & '</a>';
+		html &= '<span class="c-feed-post__meta-sep">&bull;</span>';
+		html &= '<span class="c-feed-post__timestamp ts-display" data-ts="' & encodeForHTMLAttribute( p.created_utc ) & '">' & momentFrom( p.created_utc ) & '</span>';
+		html &= '</div>';
+
+		html &= '<div class="c-feed-post__body">';
+		if ( postType == "link" ) {
+			var linkUrl    = p.link_url ?: "";
+			var ytId       = youtubeId( linkUrl );
+			var vimeoIdVal = len( ytId ) ? "" : vimeoId( linkUrl );
+			var twitchSlug = ( len( ytId ) || len( vimeoIdVal ) ) ? "" : twitchClipSlug( linkUrl );
+			if ( len( ytId ) || len( vimeoIdVal ) || len( twitchSlug ) ) {
+				html &= '<a class="post-body-anchor" href="' & postUrl & '"><div class="render-link"><h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
+				html &= '<span class="c-feed-post__domain">' & encodeForHTML( getBaseDomain( linkUrl ) ) & '</span></div></a>';
+				if ( len( ytId ) ) {
+					html &= '<div class="video-container"><iframe data-yt-embed width="560" height="315" src="https://www.youtube.com/embed/' & encodeForURL( ytId ) & '?enablejsapi=1" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>';
+				} else if ( len( vimeoIdVal ) ) {
+					html &= '<div class="video-container"><iframe data-vimeo-embed width="560" height="315" src="https://player.vimeo.com/video/' & encodeForHTMLAttribute( vimeoIdVal ) & '" title="Vimeo video player" frameborder="0" allow="autoplay; fullscreen; picture-in-picture; clipboard-write" allowfullscreen></iframe></div>';
+				} else {
+					// No src here — clips.twitch.tv/embed requires a `parent=<hostname>` param
+					// only the browser can supply correctly; set client-side, see global.js's
+					// twitchEmbedsHandler().
+					html &= '<div class="video-container"><iframe data-twitch-embed data-twitch-clip="' & encodeForHTMLAttribute( twitchSlug ) & '" width="560" height="315" frameborder="0" allowfullscreen scrolling="no" title="Twitch clip player"></iframe></div>';
+				}
+			} else {
+				html &= '<div class="render-link c-feed-post__link-card">';
+				html &= '<a class="post-body-anchor c-feed-post__link-content-link" href="' & postUrl & '"><div class="c-feed-post__link-content">';
+				html &= '<h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
+				html &= '<span class="c-feed-post__domain">' & encodeForHTML( getBaseDomain( linkUrl ) ) & '</span>';
+				var linkDesc = p.link_description ?: "";
+				if ( len( linkDesc ) ) {
+					html &= '<p class="c-feed-post__link-desc">' & encodeForHTML( linkDesc ) & '</p>';
+				}
+				html &= '</div></a>';
+				var linkImage = p.link_image ?: "";
+				if ( len( linkImage ) ) {
+					html &= '<a class="c-feed-post__link-thumb" href="' & goUrl( linkUrl ) & '" target="_blank" rel="noopener noreferrer nofollow ugc" aria-label="Open ' & encodeForHTMLAttribute( p.title ) & ' in a new tab">';
+					html &= '<img src="' & encodeForHTMLAttribute( linkImage ) & '" onerror="this.closest(''.c-feed-post__link-thumb'').style.display=''none''" loading="lazy" alt="" />';
+					html &= '<span class="c-feed-post__ext-icon" aria-hidden="true"><i class="bi bi-box-arrow-up-right"></i></span></a>';
+				}
+				html &= '</div>';
+			}
+		} else {
+			html &= '<a class="post-body-anchor" href="' & postUrl & '"><div class="render-post"><h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
+			var bodyText = p.body ?: "";
+			if ( len( trim( bodyText ) ) ) {
+				// This is only ever a CSS-truncated preview (.c-feed-post__selftext caps the
+				// rendered height and fades out) — truncate the source text first too, since
+				// getSafeHTML() hard-errors past 20,000 bytes of HTML and a long enough raw post
+				// body can render past that limit before CSS ever gets a chance to clip it.
+				if ( len( bodyText ) > 2000 ) {
+					bodyText = left( bodyText, 2000 ) & "…";
+				}
+				html &= '<div class="c-feed-post__selftext"><div class="c-feed-post__selftext-overlay" aria-hidden="true"></div>' & enhanceAnchorsInHtml( getSafeHTML( markdown( bodyText ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) & '</div>';
+			}
+			html &= '</div></a>';
+		}
+		html &= '</div>';
+
+		html &= '<div class="c-feed-post__footer">';
+		html &= '<span class="c-post__vote-pill">';
+		if ( isIdentified ) {
+			html &= '<span role="button" tabindex="0" class="c-vote ' & upClass & '" data-vote-up data-post-id="' & encodeForHTMLAttribute( p.id_short ) & '" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>';
+		} else {
+			html &= '<span class="c-vote c-vote--muted" aria-hidden="true"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>';
+		}
+		html &= '<span class="c-vote__score ' & scoreClass & '" data-vote-score aria-label="Score: ' & encodeForHTML( voteScore ) & '">' & encodeForHTML( voteScore ) & '</span>';
+		if ( isIdentified ) {
+			html &= '<span role="button" tabindex="0" class="c-vote ' & downClass & '" data-vote-down data-post-id="' & encodeForHTMLAttribute( p.id_short ) & '" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>';
+		} else {
+			html &= '<span class="c-vote c-vote--muted" aria-hidden="true"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>';
+		}
+		html &= '</span>';
+
+		html &= '<a class="c-post__action" href="' & postUrl & '" aria-label="' & encodeForHTMLAttribute( commentCnt ) & ' comments"><i class="bi bi-chat-right-text" aria-hidden="true"></i> ' & encodeForHTML( commentCnt ) & '</a>';
+		html &= '<span class="c-post__action" aria-label="' & encodeForHTMLAttribute( viewCount ) & ' views"><i class="bi bi-eye" aria-hidden="true"></i> ' & encodeForHTML( viewCount ) & '</span>';
+
+		// A live "N here now" only when it's actually notable (>0) — an in-memory TTL count, no
+		// DB hit, safe to call once per rendered card (see ws/Presence.bx's own doc comment).
+		var liveCount = new "lib.AppContext"().get( "Presence" ).countPost( p.id_short );
+		if ( liveCount > 0 ) {
+			html &= '<span class="c-post__action c-post__action--live" aria-label="' & encodeForHTMLAttribute( liveCount ) & ' viewing now"><i class="bi bi-circle-fill" aria-hidden="true"></i> ' & encodeForHTML( liveCount ) & '</span>';
+		}
+
+		if ( isIdentified ) {
+			html &= '<span role="button" tabindex="0" class="c-post__action c-post__bookmark' & ( isBookmarked ? " c-post__bookmark--active" : "" ) & '" data-bookmark-toggle data-post-id="' & encodeForHTMLAttribute( p.id_short ) & '" aria-label="' & ( isBookmarked ? "Remove bookmark" : "Bookmark" ) & '">';
+			html &= '<i class="bi ' & ( isBookmarked ? "bi-bookmark-fill" : "bi-bookmark" ) & '" aria-hidden="true"></i></span>';
+		}
+		html &= '</div>';
+
+		html &= '</article>';
+		return html;
+	}
+
+}

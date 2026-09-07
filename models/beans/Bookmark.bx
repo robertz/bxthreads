@@ -1,0 +1,145 @@
+/**
+ * Handles bookmark (save) operations on posts.
+ *
+ * All public methods are stateless — they take their targets as arguments
+ * rather than relying on loaded instance state. The bean is safe to use as
+ * a singleton.
+ *
+ * Cache key: `bookmark:{userShort}:{postShort}` — stores a boolean.
+ * Pre-populated by `Feed.warmCache()` and cleared by `toggle()`.
+ *
+ * @property {string} id         - Full UUID of the bookmark record
+ * @property {string} users_id   - UUID of the bookmarking user
+ * @property {string} posts_id   - UUID of the bookmarked post
+ * @property {string} created_at - DB creation timestamp
+ */
+class accessors="true" {
+
+	property name="id";
+	property name="users_id";
+	property name="posts_id";
+	property name="created_at";
+
+	/**
+	 * Initializes the bean with empty/default values.
+	 * Called automatically by AppContext's scanDirectory() on instantiation.
+	 *
+	 * @return {Bookmark} This instance.
+	 */
+	function init(){
+		variables.id         = "";
+		variables.users_id   = "";
+		variables.posts_id   = "";
+		variables.created_at = "";
+		return this;
+	}
+
+	/**
+	 * Toggles a bookmark for a user on a post.
+	 * Inserts a new bookmark if one does not exist; deletes it if it does.
+	 *
+	 * @param {string} users_id - UUID of the user.
+	 * @param {string} posts_id - UUID of the post.
+	 * @return {struct} `{ action: "bookmarked"|"unbookmarked" }`
+	 */
+	function toggle( required string users_id, required string posts_id ){
+		var uid = arguments.users_id;
+		var pid = arguments.posts_id;
+
+		var existing = queryExecute(
+			"SELECT BIN_TO_UUID(id) AS id
+			 FROM Bookmarks
+			 WHERE users_id = UUID_TO_BIN(:users_id)
+			   AND posts_id = UUID_TO_BIN(:posts_id)
+			 LIMIT 1",
+			{
+				"users_id" : { value: uid, cfsqltype: "cf_sql_varchar" },
+				"posts_id" : { value: pid, cfsqltype: "cf_sql_varchar" }
+			},
+			{ returnType: "array" }
+		);
+
+		var action = "";
+
+		if ( existing.len() ) {
+			queryExecute(
+				"DELETE FROM Bookmarks WHERE id = UUID_TO_BIN(:id)",
+				{ "id": { value: existing[ 1 ].id, cfsqltype: "cf_sql_varchar" } }
+			);
+			action = "unbookmarked";
+		} else {
+			var newId = lCase( createGUID() );
+			queryExecute(
+				"INSERT INTO Bookmarks (id, users_id, posts_id)
+				 VALUES (UUID_TO_BIN(:id), UUID_TO_BIN(:users_id), UUID_TO_BIN(:posts_id))",
+				{
+					"id"       : { value: newId, cfsqltype: "cf_sql_varchar" },
+					"users_id" : { value: uid,   cfsqltype: "cf_sql_varchar" },
+					"posts_id" : { value: pid,   cfsqltype: "cf_sql_varchar" }
+				}
+			);
+			action = "bookmarked";
+		}
+
+		cache( "dismalCache" ).clear( "bookmark:#left(uid,8)#:#left(pid,8)#" );
+
+		var actAction = action == "bookmarked" ? "bookmark" : "unbookmark";
+		new "lib.AppContext"().get( "ActivityService" ).log( uid, actAction, "post", pid );
+
+		return { "action": action };
+	}
+
+	/**
+	 * Returns whether a user has bookmarked a given post.
+	 * Result is cache-backed under `user_post:{userShort}:{postShort}`.
+	 *
+	 * @param {string} users_id - UUID of the user.
+	 * @param {string} posts_id - UUID of the post.
+	 * @return {boolean}
+	 */
+	function isBookmarked( required string users_id, required string posts_id ){
+		var uid      = arguments.users_id;
+		var pid      = arguments.posts_id;
+		var cacheKey = "bookmark:#left(uid,8)#:#left(pid,8)#";
+		return cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => {
+				var result = queryExecute(
+					"SELECT 1 AS found
+					 FROM Bookmarks
+					 WHERE users_id = UUID_TO_BIN(:users_id)
+					   AND posts_id = UUID_TO_BIN(:posts_id)
+					 LIMIT 1",
+					{
+						"users_id" : { value: uid, cfsqltype: "cf_sql_varchar" },
+						"posts_id" : { value: pid, cfsqltype: "cf_sql_varchar" }
+					},
+					{ returnType: "array" }
+				);
+				return result.len() ? true : false;
+			}
+		);
+	}
+
+	/**
+	 * Returns an array of id_short structs for all posts bookmarked by a user,
+	 * ordered by post creation time descending (newest post first).
+	 *
+	 * @param {string} users_id - UUID of the user.
+	 * @return {array} Array of structs with `id_short`.
+	 */
+	function getBookmarksByUser( required string users_id ){
+		var uid = arguments.users_id;
+		return queryExecute(
+			"SELECT P.id_short
+			 FROM Bookmarks BM
+			 INNER JOIN Posts P ON BM.posts_id = P.id
+			 WHERE BM.users_id = UUID_TO_BIN(:users_id)
+			   AND P.deleted = 0
+			 ORDER BY P.created_at DESC",
+			{ "users_id": { value: uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+	}
+
+}

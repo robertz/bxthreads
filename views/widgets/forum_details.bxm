@@ -1,0 +1,55 @@
+<bx:output>
+<div class="card c-card--bordered mb-2">
+	<div class="card-body">
+
+		<div class="c-widget--forum">
+			<div>
+				<h3 class="h6">f/#encodeForHTML( data.forum.display )#</h3>
+				<bx:if len( data.forum.about ?: "" )>
+					<div class="text-muted small">#encodeForHTML( data.forum.about )#</div>
+				</bx:if>
+			</div>
+		</div>
+		<hr class="text-muted">
+		<div class="text-muted">Created #dateFormat( data.forum.created_at, "mmm d, yyyy" )#</div>
+		<hr class="text-muted">
+		<div class="c-widget--forum-stats">
+			<span class="c-widget--forum-stat-count">#encodeForHTML( data.forum.subscribers ?: 0 )#</span>
+			<span class="text-muted small">&nbsp;#( data.forum.subscribers ?: 0 ) == 1 ? "Member" : "Members"#</span>
+		</div>
+
+		<bx:if data.isIdentified>
+			<hr class="text-muted">
+			<bx:set isSubscribed = data.subscribedForumIds.keyExists( data.forum.id_short )>
+			<div class="pb-2">
+				<button type="button"
+					class="c-forum__cta py-2 w-100 #isSubscribed ? 'c-forum__cta--subscribed' : ''#"
+					data-subscribe-toggle
+					data-forum="#encodeForHTMLAttribute( data.forum.display )#">
+					#isSubscribed ? "Unsubscribe" : "Subscribe"#
+				</button>
+			</div>
+		</bx:if>
+
+		<bx:if data.isIdentified && ( data.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) || data.currentUser.permissions.listFind( "FORUM_MODERATOR_" & uCase( data.forum.display ) ) )>
+			<hr class="text-muted">
+			<div class="pb-2">
+				<a class="c-forum__mod py-2 text-decoration-none" href="/f/#encodeForURL( data.forum.display )#/mod">
+					<i class="bi bi-shield-fill-check" aria-hidden="true"></i> Moderator
+				</a>
+			</div>
+		</bx:if>
+	</div>
+</div>
+
+<bx:if len( data.forum.moderators ?: "" )>
+	<div class="card c-card--bordered mb-2">
+		<div class="card-body">
+			<h5 class="card-title">Moderators</h5>
+			<bx:loop array="#listToArray( data.forum.moderators )#" index="moderator">
+				<a href="/u/#encodeForURL( moderator )#" class="d-block post-link text-decoration-none">u/#encodeForHTML( moderator )#</a>
+			</bx:loop>
+		</div>
+	</div>
+</bx:if>
+</bx:output>

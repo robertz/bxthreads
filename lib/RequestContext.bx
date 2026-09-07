@@ -1,0 +1,91 @@
+/**
+ * Replaces RequestService.bx::setup_request() + the social-meta defaults from
+ * AppRouter.bx::preHandler() — the per-request bootstrap that used to run on every ColdBox
+ * request via preHandler. Populates res.locals (boxlang-express's own per-request struct,
+ * merged into every render() call) with everything the layout and views depend on.
+ *
+ * Asset-manifest loading (dist/manifest.json content-hash lookup) is deliberately NOT ported
+ * yet — there's no esbuild output in this project yet, so `app.locals.assets` stays an empty
+ * struct and every view falls back to its unhashed /assets/... path. Revisit once a real build
+ * step exists (Phase 8 territory).
+ */
+class {
+
+	function bootstrap( required any app, required any req, required any res ) {
+		var session   = new "lib.AppContext"().get( "Session" );
+		var uid       = session.ensureUid( arguments.req );
+		var isIdentified = session.isIdentified( arguments.req );
+		var userBean  = new "models.beans.User"().getById( uid );
+
+		// req.hostname strips the :port suffix (per boxlang-express's own docs) — use the raw
+		// Host header instead so <base href> / canonical URLs match the page's real origin,
+		// or the browser's CSP `base-uri 'self'` check rejects them as cross-origin.
+		var hostAuthority = arguments.req.get( "Host" ) ?: arguments.req.hostname;
+		arguments.res.locals.canonicalUrl = arguments.req.protocol & "://" & hostAuthority & arguments.req.originalUrl;
+		arguments.res.locals.baseUrl      = arguments.req.protocol & "://" & hostAuthority & "/";
+		arguments.res.locals.currentPath  = arguments.req.path;
+		arguments.res.locals.isIdentified = isIdentified;
+		arguments.res.locals.currentUser  = userBean.getMemento();
+		arguments.res.locals.userBean     = userBean;
+
+		arguments.res.locals.forumSelect = false;
+		arguments.res.locals.headerCss   = [];
+		arguments.res.locals.headerJs    = [];
+		arguments.res.locals.footerJs    = [];
+
+		var siteName = new "lib.AppContext"().get( "Config" ).getSiteName();
+		arguments.res.locals.meta = {
+			"author"      : siteName,
+			"title"       : siteName,
+			"description" : siteName & " - Community Discussion Platform"
+		};
+
+		arguments.res.locals.forumsList = cache( "dismalCache" ).getOrSet(
+			"admin:forums",
+			() => new "lib.AppContext"().get( "Admin" ).getForums(),
+			300
+		);
+
+		arguments.res.locals.subscribedForumIds = {};
+		if ( isIdentified ) {
+			var subscribedForums = userBean.getSubscribedForums();
+			var subIds = arguments.res.locals.subscribedForumIds;
+			for ( var f in subscribedForums ) {
+				subIds[ f.id_short ] = true;
+			}
+		}
+
+		arguments.res.locals.isHome = false;
+		arguments.res.locals.jsData = {
+			"is_identified": isIdentified,
+			"uid"          : isIdentified ? uid : ""
+		};
+		arguments.res.locals.needsPrism = false;
+		arguments.res.locals.flash = session.consumeFlash( arguments.req );
+
+		arguments.res.locals.notificationUnreadCount = 0;
+		if ( isIdentified ) {
+			new "lib.AppContext"().get( "AchievementService" ).evaluate( uid );
+			arguments.res.locals.notificationUnreadCount = new "lib.AppContext"().get( "Notification" ).getUnreadCount( uid );
+		}
+
+		var meta = arguments.res.locals.meta;
+		arguments.res.locals.socialMeta = {
+			"og:type"             : "website",
+			"twitter:card"        : "summary",
+			"og:site_name"        : lCase( siteName ),
+			"og:title"            : meta.title,
+			"og:description"      : meta.description,
+			"twitter:title"       : meta.title,
+			"twitter:description" : meta.description,
+			"og:image"            : arguments.res.locals.baseUrl & "assets/images/og-default.png",
+			"og:image:width"      : "1200",
+			"og:image:height"     : "630",
+			"twitter:image"       : arguments.res.locals.baseUrl & "assets/images/og-default.png"
+		};
+		// Source app also set a hardcoded "fb:app_id" tied to the real site's Facebook
+		// integration — dropped rather than carried into a public demo fork under someone
+		// else's app id. The "?fwreinit=multipass" cache-clear convenience is also not ported.
+	}
+
+}

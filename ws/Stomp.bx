@@ -1,0 +1,81 @@
+/**
+ * Builds the app's single boxExpressStomp() broker instance — destination-based pub/sub for
+ * comment/vote/notification broadcasts (ws/Broadcast.bx) and forum presence (ws/Presence.bx).
+ *
+ * Destinations (direct exchange, exact-match — no wildcard bindings needed):
+ *   post.{id_short}   — comment-added, comment-vote-changed, post-vote-changed for that post.
+ *   user.{usersId}    — notification-received for that user's own notification badge.
+ *   forum.{id_short}  — forum-presence, the live viewer count for that forum.
+ *
+ * Identity: app.ws() routes sit outside the app.use() middleware chain entirely — no Session
+ * middleware runs for a WebSocket upgrade — so authenticate() reads the session cookie directly
+ * off the handshake (connection.cookies) and looks it up against the SAME Session middleware
+ * instance the HTTP side uses (passed in as sessionStore), rather than trusting the STOMP CONNECT
+ * frame's login/passcode headers, which are just client-supplied strings. This mirrors the source
+ * app's WebSocket.bx::authorize() reading client.uid from the cookie-backed client scope instead
+ * of the frame's login header.
+ */
+class {
+
+	function init( required any sessionStore ) {
+		variables.sessionStore = arguments.sessionStore;
+		variables.sessionCookieName = "dt_sid";
+		return this;
+	}
+
+	function build() {
+		var stomp = this;
+		return boxExpressStomp( {
+			authenticate: ( login, passcode, host, connection, connectionMetadata ) => stomp.authenticate( connection, connectionMetadata ),
+			authorize: ( login, destination, access, connection, connectionMetadata ) => stomp.authorize( destination, connectionMetadata )
+		} );
+	}
+
+	/**
+	 * Always succeeds — CONNECT never fails outright, since anonymous visitors are allowed to
+	 * subscribe to post.* and forum.* (just not user.*). Populates connectionMetadata.uid/
+	 * isIdentified from the real session cookie so authorize() below has something trustworthy
+	 * to check, regardless of what the CONNECT frame's login/passcode headers claim.
+	 */
+	function authenticate( connection, connectionMetadata ) {
+		var defaultUserId = new "lib.AppContext"().get( "Config" ).getDefaultUser();
+		var sessionId = arguments.connection.cookies[ variables.sessionCookieName ] ?: "";
+		var sessionData = len( sessionId ) ? variables.sessionStore.get( sessionId ) : javacast( "null", "" );
+		var uid = ( !isNull( sessionData ) && sessionData.keyExists( "uid" ) && len( sessionData.uid ) ) ? sessionData.uid : defaultUserId;
+
+		arguments.connectionMetadata.uid = uid;
+		arguments.connectionMetadata.isIdentified = ( uid != defaultUserId );
+		return true;
+	}
+
+	function authorize( destination, connectionMetadata ) {
+		var uid = arguments.connectionMetadata.uid ?: "";
+
+		if ( arguments.destination.left( 5 ) == "post." ) {
+			var post = new "models.beans.Post"().getByIdShort( arguments.destination.mid( 6, arguments.destination.len() - 5 ) );
+			if ( !post.hasLoaded() ) return false;
+			return canAccessForumId( post.getForums_id(), uid );
+		}
+
+		if ( arguments.destination.left( 5 ) == "user." ) {
+			var targetUsersId = arguments.destination.mid( 6, arguments.destination.len() - 5 );
+			return ( arguments.connectionMetadata.isIdentified ?: false ) && targetUsersId == uid;
+		}
+
+		if ( arguments.destination.left( 6 ) == "forum." ) {
+			var forumIdShort = arguments.destination.mid( 7, arguments.destination.len() - 6 );
+			var forum = new "models.beans.Forum"().getByIdShort( forumIdShort );
+			if ( !forum.hasLoaded() ) return false;
+			return !forum.getIs_private() || forum.userIsSubscribed( uid );
+		}
+
+		return false;
+	}
+
+	private function canAccessForumId( required string forumsId, required string uid ) {
+		var forum = new "models.beans.Forum"().getByIdShort( left( arguments.forumsId, 8 ) );
+		if ( !forum.hasLoaded() ) return false;
+		return !forum.getIs_private() || forum.userIsSubscribed( arguments.uid );
+	}
+
+}

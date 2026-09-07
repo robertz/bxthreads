@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Background: BoxLang near-black -->
+  <rect width="64" height="64" fill="#0e0f1a" rx="12"/>
+
+  <!-- Simplified [ bx ] design optimized for small sizes -->
+  <g transform="translate(32, 32)">
+    <!-- Left bracket -->
+    <text x="-19" y="7" font-family="Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#00dbff" text-anchor="middle">[</text>
+    <!-- bx text -->
+    <text x="0" y="6" font-family="Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#00ff78" text-anchor="middle">bx</text>
+    <!-- Right bracket -->
+    <text x="19" y="7" font-family="Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#00dbff" text-anchor="middle">]</text>
+  </g>
+</svg>

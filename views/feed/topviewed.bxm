@@ -1,0 +1,38 @@
+<bx:output>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-2 order-1 order-lg-2">
+			<h4 class="mb-3"><i class="bi bi-eye-fill"></i> Today's Top Viewed</h4>
+			<bx:if !data.feed.len()>
+				<p class="text-muted">Nothing viewed in the last 24 hours yet.</p>
+			</bx:if>
+			<div data-feed-list>
+				<bx:loop array="#data.feed#" index="post">
+					#new "lib.FeedItemRenderer"().renderCard( post, data.isIdentified ? data.currentUser.id : "", data.isIdentified && ( data.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) || data.currentUser.permissions.listFind( "FORUM_MODERATOR_" & uCase( post.forum ) ) ) )#
+				</bx:loop>
+			</div>
+			<bx:if data.hasMore ?: false>
+				<div
+					data-feed-sentinel
+					data-feed-mode="offset"
+					data-feed-endpoint="/top-viewed/more"
+					data-feed-offset="#data.feed.len()#"
+					style="height:1px;"
+				></div>
+			</bx:if>
+			<div id="feed-end" class="feed-end" data-feed-end style="#data.hasMore ?: false ? 'display:none;' : ''#">
+				<span class="feed-end__text">&mdash;&nbsp;end of feed&nbsp;&mdash;</span>
+			</div>
+			<div class="feed-loader" data-feed-loader style="display:none;">
+				<div class="feed-loader__spinner"></div>
+			</div>
+		</div>
+		<div class="d-none d-lg-block col-lg-3 p-2 order-lg-3">
+			#view( "widgets/recently_viewed" )#
+		</div>
+	</div>
+</div>
+</bx:output>

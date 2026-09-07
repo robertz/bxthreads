@@ -1,0 +1,29 @@
+# OS / editor
+.DS_Store
+.vscode/
+settings.xml
+
+# Secrets / local env
+.env
+
+# BoxLang runtime + installed dependencies
+boxlang_modules/**
+/testbox/**
+.tmp/**
+.engine/**
+.cbfs/**
+
+# npm (asset build tooling — esbuild)
+node_modules/**
+npm-debug.log
+yarn-error.log
+
+# Logs + test output
+logs/**
+tests/results/**
+
+# Generated
+sitemap.xml
+
+# Local Claude Code settings (may contain credentials)
+.claude/settings.local.json

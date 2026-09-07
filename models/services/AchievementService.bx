@@ -1,0 +1,537 @@
+/**
+ * Evaluates achievement criteria for users and awards/upgrades tiers.
+ *
+ * Called inline after post create, comment create, vote toggle, and
+ * on authenticated page requests. Each achievement's `metric` column
+ * dispatches to the correct counting query; tier thresholds are
+ * entirely data-driven from AchievementTiers rows.
+ */
+class {
+
+	function init(){
+		return this;
+	}
+
+	/**
+	 * Evaluate all achievement tracks for a user (except secret_comeback).
+	 * Throttled to once per 300 seconds per user via cache key.
+	 *
+	 * @return {struct} Current awards map (slug → tier number), or empty struct on skip/error.
+	 */
+	struct function evaluate( required string users_id ){
+		var userShort = left( arguments.users_id, 8 );
+		var achCacheKey = "ach:eval:#userShort#";
+		if ( !isNull( cache( "dismalCache" ).get( achCacheKey ) ) ) return {};
+		cache( "dismalCache" ).set( achCacheKey, true, 300 );
+
+		try {
+			var achievements = getAchievementMap();
+			if ( achievements.isEmpty() ) return {};
+
+			var currentAwards = getUserAchievements( arguments.users_id );
+			var stats = {};
+
+			for ( var slug in achievements ) {
+				var ach = achievements[ slug ];
+				if ( ach.metric == "absence_days" ) continue;
+				if ( !ach.tiers.len() ) continue;
+
+				var metricValue = getMetricValue( ach.metric, arguments.users_id, stats );
+				var earnedTier = {};
+
+				if ( ach.metric == "account_days_max_posts" ) {
+					earnedTier = computeCompoundTier( stats, ach.tiers );
+				} else {
+					earnedTier = computeSimpleTier( metricValue, ach.tiers );
+				}
+
+				if ( earnedTier.isEmpty() ) continue;
+
+				var currentTier = currentAwards.keyExists( slug ) ? currentAwards[ slug ] : 0;
+				if ( earnedTier.tier > currentTier ) {
+					awardTier( arguments.users_id, ach.id, earnedTier.id, slug, earnedTier.tier, earnedTier.label, earnedTier.title );
+				}
+			}
+			return currentAwards;
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).error( "Achievement evaluation failed for user #arguments.users_id#: #e.message#" );
+			return {};
+		}
+	}
+
+	/**
+	 * Evaluate all tracks including secret_comeback. Call on post create only.
+	 */
+	function evaluateOnPostCreate( required string users_id ){
+		var currentAwards = evaluate( arguments.users_id );
+
+		try {
+			var achievements = getAchievementMap();
+			if ( !achievements.keyExists( "secret_comeback" ) ) return;
+
+			var ach = achievements[ "secret_comeback" ];
+			if ( !ach.tiers.len() ) return;
+
+			var daysSincePrevious = getAbsenceDays( arguments.users_id );
+			var earnedTier = computeSimpleTier( daysSincePrevious, ach.tiers );
+			if ( earnedTier.isEmpty() ) return;
+
+			var currentTier = currentAwards.keyExists( "secret_comeback" ) ? currentAwards[ "secret_comeback" ] : 0;
+			if ( earnedTier.tier > currentTier ) {
+				awardTier( arguments.users_id, ach.id, earnedTier.id, "secret_comeback", earnedTier.tier, earnedTier.label, earnedTier.title );
+			}
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).error( "Comeback evaluation failed for user #arguments.users_id#: #e.message#" );
+		}
+	}
+
+	/**
+	 * Send a milestone notification every Nth upvote on a post.
+	 * No-ops if the vote is not an upvote, not a "created" action, or the voter is the post owner.
+	 */
+	function checkUpvoteMilestone(
+		required numeric voteValue,
+		required string action,
+		required string voterId,
+		required string postOwnerId,
+		required string postsId
+	){
+		if ( arguments.voteValue != 1 || arguments.action != "created" ) return;
+		if ( arguments.voterId == arguments.postOwnerId ) return;
+		var voteBean = new "lib.AppContext"().get( "Vote" );
+		var upvoteCount = voteBean.getUpvoteCount( arguments.postsId );
+		if ( upvoteCount > 0 && upvoteCount mod 5 == 0 ) {
+			new "lib.AppContext"().get( "Notification" ).create( arguments.postOwnerId, arguments.voterId, arguments.postsId, "", "upvote_post", upvoteCount );
+			new "lib.AppContext"().get( "Broadcast" ).notificationReceived( arguments.postOwnerId );
+		}
+	}
+
+	/**
+	 * Upsert UserStreaks. Called after the post/comment transaction commits.
+	 */
+	function updateStreak( required string users_id ){
+		queryExecute(
+			"INSERT INTO UserStreaks (users_id, current_streak, longest_streak, last_activity_date)
+			 VALUES (UUID_TO_BIN(:uid), 1, 1, CURDATE())
+			 ON DUPLICATE KEY UPDATE
+				current_streak = CASE
+					WHEN last_activity_date = CURDATE() - INTERVAL 1 DAY
+						THEN current_streak + 1
+					WHEN last_activity_date = CURDATE()
+						THEN current_streak
+					ELSE 1
+				END,
+				longest_streak = GREATEST(longest_streak,
+					CASE
+						WHEN last_activity_date = CURDATE() - INTERVAL 1 DAY
+							THEN current_streak + 1
+						WHEN last_activity_date = CURDATE()
+							THEN current_streak
+						ELSE 1
+					END),
+				last_activity_date = CURDATE()",
+			{ "uid": { value: arguments.users_id, cfsqltype: "cf_sql_varchar" } }
+		);
+	}
+
+	/**
+	 * Return earned achievements with tier detail for a user (profile display).
+	 */
+	array function getUserEarnedAchievements( required string usersId ){
+		return queryExecute(
+			"SELECT A.slug, A.category, A.name, A.secret, A.metric, A.sort_order,
+				UA.current_tier, UA.unlocked_at, UA.updated_at,
+				AT2.label  AS tier_label,
+				AT2.threshold,
+				AT2.threshold_value,
+				AT2.threshold_max,
+				AT2.title,
+				AT2.flavor
+			FROM UserAchievements UA
+			INNER JOIN Achievements A ON UA.achievements_id = A.id
+			INNER JOIN AchievementTiers AT2
+				ON AT2.achievements_id = A.id AND AT2.tier = UA.current_tier
+			WHERE UA.users_id = UUID_TO_BIN(:users_id)
+			ORDER BY A.sort_order",
+			{ "users_id": { value: arguments.usersId, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+	}
+
+	/**
+	 * Return all tiers for a given achievement slug up to and including maxTier.
+	 */
+	array function getAchievementTiers( required string slug, required numeric maxTier ){
+		return queryExecute(
+			"SELECT AT2.tier, AT2.label, AT2.threshold, AT2.threshold_value,
+				AT2.threshold_max, AT2.title, AT2.flavor
+			FROM AchievementTiers AT2
+			INNER JOIN Achievements A ON AT2.achievements_id = A.id
+			WHERE A.slug = :slug AND AT2.tier <= :maxTier
+			ORDER BY AT2.tier",
+			{
+				"slug"    : { value: arguments.slug, cfsqltype: "cf_sql_varchar" },
+				"maxTier" : { value: arguments.maxTier, cfsqltype: "cf_sql_tinyint" }
+			},
+			{ returnType: "array" }
+		);
+	}
+
+	array function getAllTiers( required string slug ){
+		return queryExecute(
+			"SELECT AT2.tier, AT2.label, AT2.threshold, AT2.threshold_value,
+				AT2.threshold_max, AT2.title, AT2.flavor
+			FROM AchievementTiers AT2
+			INNER JOIN Achievements A ON AT2.achievements_id = A.id
+			WHERE A.slug = :slug
+			ORDER BY AT2.tier",
+			{ "slug": { value: arguments.slug, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+	}
+
+	// =========================================================================
+	// Metric value resolution
+	// =========================================================================
+
+	private numeric function getMetricValue( required string metric, required string uid, required struct stats ){
+		switch ( arguments.metric ) {
+			case "account_days":
+				if ( !arguments.stats.keyExists( "account_days" ) ) {
+					arguments.stats[ "account_days" ] = queryAccountDays( arguments.uid );
+				}
+				return arguments.stats[ "account_days" ];
+
+			case "contribution_count":
+				if ( !arguments.stats.keyExists( "contribution_count" ) ) {
+					arguments.stats[ "contribution_count" ] = queryContributionCount( arguments.uid );
+				}
+				return arguments.stats[ "contribution_count" ];
+
+			case "post_count":
+				if ( !arguments.stats.keyExists( "post_count" ) ) {
+					arguments.stats[ "post_count" ] = queryPostCount( arguments.uid );
+				}
+				return arguments.stats[ "post_count" ];
+
+			case "link_count":
+				if ( !arguments.stats.keyExists( "link_count" ) ) {
+					arguments.stats[ "link_count" ] = queryLinkCount( arguments.uid );
+				}
+				return arguments.stats[ "link_count" ];
+
+			case "likes_received":
+				if ( !arguments.stats.keyExists( "likes_received" ) ) {
+					arguments.stats[ "likes_received" ] = queryLikesReceived( arguments.uid );
+				}
+				return arguments.stats[ "likes_received" ];
+
+			case "likes_given":
+				if ( !arguments.stats.keyExists( "likes_given" ) ) {
+					arguments.stats[ "likes_given" ] = queryLikesGiven( arguments.uid );
+				}
+				return arguments.stats[ "likes_given" ];
+
+			case "reply_count":
+				if ( !arguments.stats.keyExists( "reply_count" ) ) {
+					arguments.stats[ "reply_count" ] = queryReplyCount( arguments.uid );
+				}
+				return arguments.stats[ "reply_count" ];
+
+			case "streak_days":
+				if ( !arguments.stats.keyExists( "streak_days" ) ) {
+					arguments.stats[ "streak_days" ] = queryStreakDays( arguments.uid );
+				}
+				return arguments.stats[ "streak_days" ];
+
+			case "load_more_count":
+				if ( !arguments.stats.keyExists( "load_more_count" ) ) {
+					arguments.stats[ "load_more_count" ] = queryLoadMoreCount( arguments.uid );
+				}
+				return arguments.stats[ "load_more_count" ];
+
+			case "account_days_max_posts":
+				if ( !arguments.stats.keyExists( "account_days" ) ) {
+					arguments.stats[ "account_days" ] = queryAccountDays( arguments.uid );
+				}
+				if ( !arguments.stats.keyExists( "contribution_count" ) ) {
+					arguments.stats[ "contribution_count" ] = queryContributionCount( arguments.uid );
+				}
+				return 0;
+
+			default:
+				return 0;
+		}
+	}
+
+	// =========================================================================
+	// Individual metric queries
+	// =========================================================================
+
+	private numeric function queryAccountDays( required string uid ){
+		var rows = queryExecute(
+			"SELECT DATEDIFF(NOW(), created_at) AS days_old
+			 FROM Users WHERE id = UUID_TO_BIN(:uid)",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].days_old ) : 0;
+	}
+
+	private numeric function queryContributionCount( required string uid ){
+		var rows = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM Posts
+			 WHERE users_id = UUID_TO_BIN(:uid) AND deleted = 0",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].cnt ) : 0;
+	}
+
+	private numeric function queryPostCount( required string uid ){
+		var rows = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM Posts
+			 WHERE users_id = UUID_TO_BIN(:uid) AND post_type = 'post' AND deleted = 0",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].cnt ) : 0;
+	}
+
+	private numeric function queryLinkCount( required string uid ){
+		var rows = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM Posts
+			 WHERE users_id = UUID_TO_BIN(:uid) AND post_type = 'link' AND deleted = 0",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].cnt ) : 0;
+	}
+
+	private numeric function queryLikesReceived( required string uid ){
+		var rows = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM Votes v
+			 WHERE v.vote = 1
+			   AND v.users_id != UUID_TO_BIN(:uid)
+			   AND (
+				   v.posts_id IN (SELECT id FROM Posts WHERE users_id = UUID_TO_BIN(:uid))
+				   OR v.comments_id IN (SELECT id FROM Comments WHERE users_id = UUID_TO_BIN(:uid))
+			   )",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].cnt ) : 0;
+	}
+
+	private numeric function queryLikesGiven( required string uid ){
+		var rows = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM Votes v
+			 WHERE v.users_id = UUID_TO_BIN(:uid) AND v.vote = 1
+			   AND (
+				   v.posts_id IS NULL OR v.posts_id NOT IN (SELECT id FROM Posts WHERE users_id = UUID_TO_BIN(:uid))
+			   )
+			   AND (
+				   v.comments_id IS NULL OR v.comments_id NOT IN (SELECT id FROM Comments WHERE users_id = UUID_TO_BIN(:uid))
+			   )",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].cnt ) : 0;
+	}
+
+	private numeric function queryReplyCount( required string uid ){
+		var rows = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM Comments
+			 WHERE users_id = UUID_TO_BIN(:uid) AND deleted = 0",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].cnt ) : 0;
+	}
+
+	private numeric function queryStreakDays( required string uid ){
+		var rows = queryExecute(
+			"SELECT current_streak FROM UserStreaks
+			 WHERE users_id = UUID_TO_BIN(:uid)",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].current_streak ) : 0;
+	}
+
+	private numeric function queryLoadMoreCount( required string uid ){
+		var rows = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM Activities
+			 WHERE users_id = UUID_TO_BIN(:uid)
+			   AND action = 'load_more'",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		return rows.len() ? val( rows[ 1 ].cnt ) : 0;
+	}
+
+	private numeric function getAbsenceDays( required string uid ){
+		var rows = queryExecute(
+			"SELECT DATE(created_at) AS post_date
+			 FROM Posts
+			 WHERE users_id = UUID_TO_BIN(:uid) AND deleted = 0
+			 ORDER BY created_at DESC
+			 LIMIT 2",
+			{ "uid": { value: arguments.uid, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		if ( rows.len() < 2 ) return 0;
+		return dateDiff( "d", rows[ 2 ].post_date, rows[ 1 ].post_date );
+	}
+
+	// =========================================================================
+	// Tier computation
+	// =========================================================================
+
+	private struct function computeSimpleTier( required numeric metricValue, required array tiers ){
+		var result = {};
+		for ( var t in arguments.tiers ) {
+			if ( arguments.metricValue >= t.threshold_value ) {
+				result = t;
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * Ghost/compound: account_days >= threshold_value AND contribution_count <= threshold_max.
+	 * Iterates tiers descending so the highest qualifying tier wins.
+	 */
+	private struct function computeCompoundTier( required struct stats, required array tiers ){
+		var accountDays = arguments.stats.keyExists( "account_days" ) ? arguments.stats[ "account_days" ] : 0;
+		var postCount   = arguments.stats.keyExists( "contribution_count" ) ? arguments.stats[ "contribution_count" ] : 0;
+
+		var sorted = duplicate( arguments.tiers );
+		sorted.sort( ( a, b ) => b.tier - a.tier );
+
+		for ( var t in sorted ) {
+			var maxPosts = !isNull( t.threshold_max ) && isNumeric( t.threshold_max ) ? t.threshold_max : 0;
+			if ( accountDays >= t.threshold_value && postCount <= maxPosts ) {
+				return t;
+			}
+		}
+		return {};
+	}
+
+	// =========================================================================
+	// Award logic
+	// =========================================================================
+
+	private function awardTier(
+		required string usersId,
+		required string achievementsId,
+		required string tierId,
+		required string slug,
+		required numeric tierNumber,
+		required string tierLabel,
+		required string tierTitle
+	){
+		queryExecute(
+			"INSERT INTO UserAchievements (id, users_id, achievements_id, current_tier)
+			 VALUES (UUID_TO_BIN(UUID()), UUID_TO_BIN(:uid), UUID_TO_BIN(:aid), :tier)
+			 ON DUPLICATE KEY UPDATE current_tier = :tier",
+			{
+				"uid"  : { value: arguments.usersId, cfsqltype: "cf_sql_varchar" },
+				"aid"  : { value: arguments.achievementsId, cfsqltype: "cf_sql_varchar" },
+				"tier" : { value: arguments.tierNumber, cfsqltype: "cf_sql_tinyint" }
+			}
+		);
+
+		queryExecute(
+			"INSERT INTO UserAchievementHistory (id, users_id, achievements_id, tier_id, tier_number)
+			 VALUES (UUID_TO_BIN(UUID()), UUID_TO_BIN(:uid), UUID_TO_BIN(:aid), UUID_TO_BIN(:tid), :tier)",
+			{
+				"uid"  : { value: arguments.usersId, cfsqltype: "cf_sql_varchar" },
+				"aid"  : { value: arguments.achievementsId, cfsqltype: "cf_sql_varchar" },
+				"tid"  : { value: arguments.tierId, cfsqltype: "cf_sql_varchar" },
+				"tier" : { value: arguments.tierNumber, cfsqltype: "cf_sql_tinyint" }
+			}
+		);
+
+		queryExecute(
+			"INSERT INTO Notifications (users_id, actor_id, type, meta)
+			 VALUES (
+				UUID_TO_BIN(:uid),
+				UUID_TO_BIN(:uid),
+				'achievement',
+				JSON_OBJECT(
+					'slug', :slug,
+					'tier', :tier,
+					'tier_label', :tier_label,
+					'title', :title
+				)
+			 )",
+			{
+				"uid"        : { value: arguments.usersId, cfsqltype: "cf_sql_varchar" },
+				"slug"       : { value: arguments.slug, cfsqltype: "cf_sql_varchar" },
+				"tier"       : { value: arguments.tierNumber, cfsqltype: "cf_sql_tinyint" },
+				"tier_label" : { value: arguments.tierLabel, cfsqltype: "cf_sql_varchar" },
+				"title"      : { value: arguments.tierTitle, cfsqltype: "cf_sql_varchar" }
+			}
+		);
+
+		var userShort = left( arguments.usersId, 8 );
+		cache( "dismalCache" ).clear( "notif:#userShort#:unread" );
+		cache( "dismalCache" ).clear( "notif:#userShort#:recent" );
+	}
+
+	// =========================================================================
+	// Data retrieval
+	// =========================================================================
+
+	private struct function getAchievementMap(){
+		var cacheKey = "achievements:map";
+		return cache( "dismalCache" ).getOrSet( cacheKey, () => {
+			var rows = queryExecute(
+				"SELECT BIN_TO_UUID(A.id) AS id, A.slug, A.metric,
+					BIN_TO_UUID(AT2.id) AS tier_id, AT2.tier, AT2.label,
+					AT2.threshold_value, AT2.threshold_max, AT2.title
+				FROM Achievements A
+				LEFT JOIN AchievementTiers AT2 ON AT2.achievements_id = A.id
+				ORDER BY A.slug, AT2.tier",
+				{},
+				{ returnType: "array" }
+			);
+
+			var result = {};
+			for ( var row in rows ) {
+				if ( !result.keyExists( row.slug ) ) {
+					result[ row.slug ] = { "id": row.id, "metric": row.metric, "tiers": [] };
+				}
+				if ( !isNull( row.tier ) ) {
+					result[ row.slug ].tiers.append( {
+						"id"              : row.tier_id,
+						"tier"            : row.tier,
+						"label"           : row.label,
+						"threshold_value" : row.threshold_value,
+						"threshold_max"   : isNull( row.threshold_max ) ? javacast( "null", "" ) : row.threshold_max,
+						"title"           : row.title
+					} );
+				}
+			}
+			return result;
+		}, 300 );
+	}
+
+	private struct function getUserAchievements( required string usersId ){
+		var rows = queryExecute(
+			"SELECT A.slug, UA.current_tier
+			 FROM UserAchievements UA
+			 INNER JOIN Achievements A ON UA.achievements_id = A.id
+			 WHERE UA.users_id = UUID_TO_BIN(:users_id)",
+			{ "users_id": { value: arguments.usersId, cfsqltype: "cf_sql_varchar" } },
+			{ returnType: "array" }
+		);
+		var result = {};
+		for ( var row in rows ) {
+			result[ row.slug ] = row.current_tier;
+		}
+		return result;
+	}
+
+}

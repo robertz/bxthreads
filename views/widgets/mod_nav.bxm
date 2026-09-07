@@ -1,0 +1,14 @@
+<bx:output>
+<div class="mod-wrap__header">
+	<h1 class="mod-wrap__title">Moderator Dashboard</h1>
+	<span class="mod-wrap__badge">Admin</span>
+</div>
+
+<nav class="mod-nav" aria-label="Dashboard sections">
+	<a href="/mod/activity" class="mod-nav__btn #data.currentPath == '/mod/activity' ? 'mod-nav__btn--active' : ''#">Activity</a>
+	<a href="/mod/posts"    class="mod-nav__btn #data.currentPath == '/mod/posts'    ? 'mod-nav__btn--active' : ''#">Posts</a>
+	<a href="/mod/forums"   class="mod-nav__btn #data.currentPath == '/mod/forums'   ? 'mod-nav__btn--active' : ''#">Forums</a>
+	<a href="/mod/users"    class="mod-nav__btn #data.currentPath == '/mod/users'    ? 'mod-nav__btn--active' : ''#">Users</a>
+	<a href="/mod/mods"     class="mod-nav__btn #data.currentPath == '/mod/mods'     ? 'mod-nav__btn--active' : ''#">Moderators</a>
+</nav>
+</bx:output>

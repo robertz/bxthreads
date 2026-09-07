@@ -1,0 +1,390 @@
+/* ── Comment thread root ── */
+
+.c-comment {
+	margin: 0;
+}
+
+.c-comment--focused {
+	border-radius: 8px;
+	animation: c-comment-focus-fade 2.5s ease forwards;
+}
+
+@keyframes c-comment-focus-fade {
+	0%   { background-color: rgba(var(--accent-rgb), 0.12); outline: 1px solid rgba(var(--accent-rgb), 0.35); outline-offset: 4px; }
+	70%  { background-color: rgba(var(--accent-rgb), 0.06); outline: 1px solid rgba(var(--accent-rgb), 0.15); outline-offset: 4px; }
+	100% { background-color: transparent; outline: 1px solid transparent; outline-offset: 4px; }
+}
+
+.c-comment__wrapper {
+	margin-bottom: 16px;
+}
+
+/* ── Comment header: author · timestamp ── */
+
+.c-comment__header-sep {
+	font-size: 10px;
+	color: var(--text-sep);
+	line-height: 1;
+}
+
+.c-comment__header {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+}
+
+a.c-comment__author,
+a.c-comment__author:visited {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--color-white);
+	text-decoration: none;
+}
+
+[data-theme="light"] a.c-comment__author,
+[data-theme="light"] a.c-comment__author:visited {
+	color: #1c1c1c;
+}
+
+a.c-comment__author:hover {
+	color: var(--color-white);
+	text-decoration: underline;
+	text-decoration-color: rgba(255,255,255,0.35);
+}
+
+[data-theme="light"] a.c-comment__author:hover {
+	text-decoration-color: rgba(24, 30, 26, 0.35);
+}
+
+.c-comment__timestamp {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--text-secondary);
+}
+
+.c-comment__op-badge {
+	display: inline-block;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--post-link-text);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	background: rgba(var(--accent-rgb), 0.12);
+	border: 1px solid rgba(var(--accent-rgb), 0.3);
+	border-radius: 4px;
+	padding: 1px 5px;
+	vertical-align: middle;
+	line-height: 1.4;
+	margin-left: 4px;
+}
+
+/* ── Comment body ── */
+
+.c-comment__content {
+	font-size: 14px;
+	line-height: 1.6;
+	color: rgba(255,255,255,0.85);
+	margin-bottom: 8px;
+}
+
+.c-comment__content p:last-child {
+	margin-bottom: 0;
+}
+
+/* ── Nested children ── */
+
+.c-comment__children {
+	padding-left: 8px;
+	border-left: 2px solid var(--comment-depth-1, rgba(var(--accent-rgb), 0.28));
+	margin-top: 12px;
+}
+
+/* Depth-alternating border colors for visual thread scanning */
+.c-comment__children .c-comment__children {
+	border-left-color: var(--comment-depth-2, rgba(122, 162, 247, 0.24));
+}
+
+.c-comment__children .c-comment__children .c-comment__children {
+	border-left-color: var(--comment-depth-3, rgba(158, 206, 106, 0.22));
+}
+
+.c-comment__children .c-comment__children .c-comment__children .c-comment__children {
+	border-left-color: var(--comment-depth-4, rgba(224, 175, 104, 0.22));
+}
+
+.c-comment__children .c-comment__children .c-comment__children .c-comment__children .c-comment__children {
+	border-left-color: var(--comment-depth-5, rgba(247, 118, 142, 0.20));
+}
+
+/* ── New comment / edit editors ── */
+
+.c-comments__editor,
+.c-comment__edit-form {
+	background-color: var(--color-neutral-background-container);
+	border: 1px solid var(--main-border-color);
+	border-radius: 12px;
+	padding: 16px;
+}
+
+.c-comment__edit-form {
+	margin-top: 12px;
+}
+
+/* ── Inline reply form ── */
+
+.c-comment__reply {
+	margin-top: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.c-comment__reply-actions {
+	justify-content: flex-end;
+}
+
+.c-comments__textarea,
+.c-comment__textarea {
+	width: 100%;
+	background-color: var(--color-neutral-background);
+	border: 1px solid var(--main-border-color);
+	border-radius: 10px;
+	color: var(--color-white);
+	padding: 12px;
+	font-size: 0.95rem;
+	font-family: inherit;
+	resize: vertical;
+	min-height: 100px;
+	transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.c-comment__reply .c-comment__textarea {
+	min-height: 56px;
+	padding: 8px 10px;
+	font-size: 0.875rem;
+	border-radius: var(--ui-radius-sm);
+}
+
+.c-comments__textarea::placeholder,
+.c-comment__textarea::placeholder {
+	color: var(--text-placeholder);
+}
+
+.c-comments__textarea:focus,
+.c-comment__textarea:focus {
+	border-color: var(--post-link-text);
+	box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.15);
+	outline: none;
+}
+
+/* ── Action rows ── */
+
+.c-comment__actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+/* ── Inline action links (Reply, Edit) ── */
+
+.c-comment__action {
+	background: none;
+	border: none;
+	padding: 2px 6px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-secondary);
+	cursor: pointer;
+	border-radius: 4px;
+	opacity: 0.7;
+	transition: color 150ms ease, background-color 150ms ease, opacity 150ms ease;
+}
+
+.c-comment__action:hover {
+	color: rgba(255,255,255,0.75);
+	background-color: rgba(255,255,255,0.06);
+	opacity: 1;
+}
+
+.c-comment__wrapper:hover .c-comment__action {
+	opacity: 1;
+}
+
+.c-comment__action--danger {
+	color: rgba(241, 65, 108, 0.55);
+}
+
+.c-comment__action--danger:hover {
+	background-color: rgba(241, 65, 108, 0.1);
+	color: #f1416c;
+}
+
+/* ── Pill buttons (Comment, Save, Cancel) ── */
+
+.c-comment__pill {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.25rem;
+	padding: 6px 18px;
+	font-size: 0.8rem;
+	font-weight: 600;
+	line-height: 1.2;
+	border-radius: 999px;
+	border: 1px solid transparent;
+	text-decoration: none;
+	cursor: pointer;
+	transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.c-comment__button {
+	background-color: var(--accent);
+	border-color: var(--accent);
+	color: var(--accent-ink);
+}
+
+.c-comment__button:hover,
+.c-comment__button:focus {
+	background: var(--gradient-diagonal);
+	border-color: transparent;
+	box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.3);
+}
+
+.c-comment__button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.c-comment__button--secondary {
+	background-color: transparent;
+	border-color: var(--light-border-color);
+	color: var(--post-anchor);
+}
+
+.c-comment__button--secondary:hover,
+.c-comment__button--secondary:focus {
+	background-color: var(--color-neutral-background);
+	border-color: var(--post-link-text);
+	color: var(--color-white);
+}
+
+.c-comment__button--danger {
+	background-color: #f1416c;
+	border-color: #f1416c;
+	color: #fff;
+}
+
+.c-comment__button--danger:hover,
+.c-comment__button--danger:focus {
+	filter: brightness(1.1);
+	box-shadow: 0 0 10px rgba(241, 65, 108, 0.3);
+}
+
+/* ── Separator between vote cluster and action links ── */
+
+.c-comment__action-sep {
+	display: inline-block;
+	width: 1px;
+	height: 12px;
+	background-color: rgba(255,255,255,0.12);
+	margin: 0 2px;
+}
+
+/* ── Comment sort bar ── */
+
+.c-comments__sort {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 6px 0 12px;
+	flex-wrap: wrap;
+}
+
+.c-comments__sort-label {
+	font-size: 12px;
+	color: var(--text-muted);
+	font-weight: 600;
+	margin-right: 2px;
+}
+
+.c-comments__sort-btn {
+	background: none;
+	border: 1px solid transparent;
+	padding: 3px 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-secondary);
+	cursor: pointer;
+	border-radius: 999px;
+	transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease;
+}
+
+.c-comments__sort-btn:hover {
+	background-color: rgba(255, 255, 255, 0.06);
+	border-color: rgba(255, 255, 255, 0.1);
+	color: #d7dadc;
+}
+
+.c-comments__sort-btn--active {
+	color: var(--post-link-text);
+	border-color: rgba(var(--accent-rgb), 0.3);
+	background: rgba(var(--accent-rgb), 0.08);
+}
+
+/* ── Comment collapse toggle ── */
+
+.c-comment__collapse {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	margin-right: 4px;
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-sep);
+	cursor: pointer;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 1;
+	flex-shrink: 0;
+	transition: border-color 100ms ease, color 100ms ease, background-color 100ms ease;
+	padding: 0;
+}
+
+.c-comment__collapse:hover {
+	border-color: rgba(255, 255, 255, 0.45);
+	color: var(--text-secondary);
+}
+
+.c-comment--collapsed .c-comment__content,
+.c-comment--collapsed .c-comment__actions,
+.c-comment--collapsed .c-comment__reply,
+.c-comment--collapsed .c-comment__children {
+	display: none;
+}
+
+.c-comment--collapsed .c-comment__header {
+	opacity: 0.5;
+}
+
+.c-comment--collapsed .c-comment__collapse {
+	color: var(--post-link-text);
+	border-color: rgba(var(--accent-rgb), 0.4);
+}
+
+@media (max-width: 767.98px) {
+	/* Each nesting level's 8px padding-left compounds fast on a narrow screen — a 4-5 level
+	   thread otherwise eats 30-40px of a ~375px viewport in indentation alone before any comment
+	   text even starts. The color-changing left border still marks depth without costing width. */
+	.c-comment__children {
+		padding-left: 5px;
+	}
+}

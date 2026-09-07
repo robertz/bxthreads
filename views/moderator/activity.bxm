@@ -1,0 +1,50 @@
+<bx:output>
+<div class="mod-wrap">
+	#view("widgets/mod_nav")#
+	<div class="row">
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Recent Activity</h2>
+					<bx:if !data.activity.len()>
+						<p class="mod-table__muted mb-0">No activity yet.</p>
+					<bx:else>
+						<table class="mod-table">
+							<thead>
+								<tr>
+									<th>User</th>
+									<th>Type</th>
+									<th>Post</th>
+									<th>When</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#data.activity#" index="i">
+									<tr>
+										<td class="mod-table__nowrap">#encodeForHTML( i.user_name )#</td>
+										<td class="mod-table__nowrap">
+											<span class="mod-activity-badge mod-activity-badge--#encodeForHTMLAttribute( i.activity_type )#">
+												#encodeForHTML( i.activity_type.replace( '_', ' ' ) )#
+											</span>
+										</td>
+										<td>
+											<bx:if len( i.post_id_short ?: "" ) && len( i.post_title ?: "" )>
+												<a href="/f/#encodeForURL( i.forum )#/comments/#encodeForURL( i.post_id_short )#/#encodeForURL( slugifyText( i.post_title ) )#" class="post-link text-decoration-none">#encodeForHTML( i.post_title )#</a>
+											<bx:else>
+												<span class="mod-table__muted">&mdash;</span>
+											</bx:if>
+										</td>
+										<td class="mod-table__nowrap mod-table__muted">
+											<span class="ts-display" data-ts="#encodeForHTMLAttribute( i.activity_at )#">#momentFrom( i.activity_at )#</span>
+										</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

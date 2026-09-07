@@ -1,0 +1,154 @@
+<bx:output>
+<bx:if len( data.focusComment ?: "" )>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+	setTimeout(function() {
+		var el = document.getElementById('c-#encodeForJavaScript( data.focusComment )#');
+		if (el) {
+			el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			el.classList.add('c-comment--focused');
+		}
+	}, 150);
+});
+</script>
+</bx:if>
+<div class="dt-layout text-white mb-5">
+	<div class="row">
+		<div class="d-none d-lg-block col-lg-2 order-lg-1 dt-sidebar-left">
+			#view( "widgets/left_nav" )#
+		</div>
+		<div class="col-12 col-lg-7 p-3 order-1 order-lg-2">
+
+			<bx:set linkData = data.post.link_data ?: {}>
+			<bx:set ytId = data.post.post_type == "link" ? youtubeId( linkData.url ?: "" ) : "">
+			<bx:set vimeoIdVal = ( data.post.post_type == "link" && !len( ytId ) ) ? vimeoId( linkData.url ?: "" ) : "">
+			<bx:set twitchSlug = ( data.post.post_type == "link" && !len( ytId ) && !len( vimeoIdVal ) ) ? twitchClipSlug( linkData.url ?: "" ) : "">
+
+			<div data-post-id="#encodeForHTMLAttribute( data.post.id_short )#">
+			<div class="c-post__container">
+				<div class="c-post__header">
+					<a href="/f/#encodeForURL( data.forum.display )#" class="c-post__forum">f/#encodeForHTML( data.forum.display )#</a>
+					<bx:if data.forum.is_private><i class="bi bi-lock-fill c-post__private-lock" aria-label="Private forum"></i></bx:if>
+					<span class="c-post__meta-sep">&bull;</span>
+					<span class="c-post__meta">posted by <a href="/u/#encodeForURL( data.post.user_name )#" class="c-post__author">#encodeForHTML( data.post.user_name )#</a></span>
+					<span class="c-post__meta-sep">&bull;</span>
+					<span class="c-post__timestamp ts-display" data-ts="#encodeForHTMLAttribute( data.post.created_utc )#">#momentFrom( data.post.created_utc )#</span>
+					<bx:if data.post.created_utc != data.post.updated_utc>
+						<span class="c-post__meta-sep">&bull;</span>
+						<span class="c-post__edited">Edited <span class="ts-display ts-edit-display" data-ts="#encodeForHTMLAttribute( data.post.updated_utc )#">#momentFrom( data.post.updated_utc )#</span></span>
+					</bx:if>
+				</div>
+
+				<div class="c-post__body">
+					<h1 class="c-post__title">#encodeForHTML( data.post.title )#</h1>
+
+					<bx:if data.post.post_type == "link">
+						<div class="c-post__link-body">
+							<bx:if len( ytId )>
+								<div class="video-container">
+									<iframe data-yt-embed width="640" height="385" src="https://www.youtube.com/embed/#encodeForURL( ytId )#?enablejsapi=1" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+								</div>
+							<bx:elseif len( vimeoIdVal )>
+								<div class="video-container">
+									<iframe data-vimeo-embed width="640" height="385" src="https://player.vimeo.com/video/#encodeForHTMLAttribute( vimeoIdVal )#" title="Vimeo video player" frameborder="0" allow="autoplay; fullscreen; picture-in-picture; clipboard-write" allowfullscreen></iframe>
+								</div>
+							<bx:elseif len( twitchSlug )>
+								<div class="video-container">
+									<iframe data-twitch-embed data-twitch-clip="#encodeForHTMLAttribute( twitchSlug )#" width="640" height="385" frameborder="0" allowfullscreen scrolling="no" title="Twitch clip player"></iframe>
+								</div>
+							<bx:else>
+								<div class="c-post-card">
+									<bx:if len( linkData.image ?: "" )>
+										<img src="#encodeForHTMLAttribute( linkData.image )#" class="c-post-card__img" onerror="this.parentNode.removeChild(this)" alt="" />
+									</bx:if>
+									<div class="c-post-card__footer">
+										<bx:if len( linkData.description ?: "" )>
+											<p class="c-post-card__desc">#encodeForHTML( linkData.description )#</p>
+										</bx:if>
+										<div class="c-post-card__domain">
+											<a href="#goUrl( linkData.url ?: '' )#" class="c-post__domain-link" target="_blank" rel="noopener noreferrer nofollow ugc">#encodeForHTML( getBaseDomain( linkData.url ?: '' ) )#</a>
+											<a class="c-post__action" href="#goUrl( linkData.url ?: '' )#" target="_blank" rel="noopener noreferrer nofollow ugc">
+												<i class="bi bi-box-arrow-up-right" aria-hidden="true"></i> View
+											</a>
+										</div>
+									</div>
+								</div>
+							</bx:if>
+							<bx:if len( trim( data.post.body ?: "" ) )>
+								<div class="c-post__link-commentary" data-post-body>#enhanceAnchorsInHtml( getSafeHTML( markdown( data.post.body ), { directives: { noopenerAndNoreferrerAnchors: true } } ) )#</div>
+							</bx:if>
+						</div>
+					<bx:else>
+						<div class="post" data-post-body>#enhanceAnchorsInHtml( getSafeHTML( markdown( data.post.body ), { directives: { noopenerAndNoreferrerAnchors: true } } ) )#</div>
+					</bx:if>
+
+					<bx:if data.isAuthor || data.isForumModerator>
+						<form data-post-edit-form class="c-post__edit-form" style="display:none;">
+							<textarea class="c-post__edit-textarea" rows="8">#encodeForHTML( data.post.body )#</textarea>
+							<div class="c-post__edit-actions">
+								<button type="submit" class="c-comment__pill c-comment__button">Save</button>
+								<button type="button" class="c-comment__pill c-comment__button--secondary" data-post-edit-toggle>Cancel</button>
+							</div>
+						</form>
+					</bx:if>
+				</div>
+			</div>
+
+			<div class="c-post__footer">
+				<span class="c-post__vote-pill">
+					<bx:if data.isIdentified>
+						<span role="button" tabindex="0" class="c-vote #data.userVote == 1 ? 'c-vote--active-up' : ''#" data-vote-up data-post-id="#encodeForHTMLAttribute( data.post.id_short )#" aria-label="Upvote"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>
+					<bx:else>
+						<span class="c-vote c-vote--muted" aria-hidden="true"><i class="bi bi-arrow-up-short" aria-hidden="true"></i></span>
+					</bx:if>
+					<span class="c-vote__score #data.userVote == 1 ? 'c-vote__score--up' : ( data.userVote == -1 ? 'c-vote__score--down' : '' )#" data-vote-score aria-label="Score: #encodeForHTML( data.voteScore )#">#encodeForHTML( data.voteScore )#</span>
+					<bx:if data.isIdentified>
+						<span role="button" tabindex="0" class="c-vote #data.userVote == -1 ? 'c-vote--active-down' : ''#" data-vote-down data-post-id="#encodeForHTMLAttribute( data.post.id_short )#" aria-label="Downvote"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>
+					<bx:else>
+						<span class="c-vote c-vote--muted" aria-hidden="true"><i class="bi bi-arrow-down-short" aria-hidden="true"></i></span>
+					</bx:if>
+				</span>
+
+				<span class="c-post__action" aria-label="#encodeForHTMLAttribute( data.commentsTree.len() )# comments"><i class="bi bi-chat-right-text" aria-hidden="true"></i> #encodeForHTML( data.commentsTree.len() )#</span>
+				<span class="c-post__action" aria-label="#encodeForHTMLAttribute( data.viewCount ?: 0 )# views"><i class="bi bi-eye" aria-hidden="true"></i> #encodeForHTML( data.viewCount ?: 0 )#</span>
+				<span style="color: var(--text-muted); font-size: 0.8rem;" data-post-presence-count>#encodeForHTML( data.postPresenceCount ?: 1 )# viewing now</span>
+
+				<bx:if data.isIdentified>
+					<span role="button" tabindex="0" class="c-post__action c-post__bookmark #data.isBookmarked ? 'c-post__bookmark--active' : ''#" data-bookmark-toggle data-post-id="#encodeForHTMLAttribute( data.post.id_short )#" aria-label="#data.isBookmarked ? 'Remove bookmark' : 'Bookmark'#">
+						<i class="bi #data.isBookmarked ? 'bi-bookmark-fill' : 'bi-bookmark'#" aria-hidden="true"></i>
+					</span>
+				</bx:if>
+				<bx:if data.isAuthor || data.isForumModerator>
+					<button type="button" class="c-post__action" data-post-edit-toggle>Edit</button>
+					<button type="button" class="c-post__action c-post__action--danger" data-post-delete data-post-id="#encodeForHTMLAttribute( data.post.id_short )#">Delete</button>
+				</bx:if>
+				<bx:if data.isForumModerator>
+					<button type="button" class="c-post__action" data-post-pin-toggle data-post-id="#encodeForHTMLAttribute( data.post.id_short )#">#data.post.pinned ?: false ? "Unpin" : "Pin"#</button>
+				</bx:if>
+			</div>
+			</div>
+
+			<h2 class="h6 mb-3 mt-4">Comments</h2>
+
+			<bx:if data.isIdentified>
+				<form class="c-comments__editor mb-3" data-comment-form data-parent-id="">
+					<textarea class="c-comments__textarea" rows="3" placeholder="Add a comment…" required></textarea>
+					<div class="c-comment__actions c-comment__reply-actions">
+						<button type="submit" class="c-comment__pill c-comment__button">Post comment</button>
+					</div>
+				</form>
+			</bx:if>
+
+			<div data-comments-root>
+				<bx:if !data.commentsTree.len()>
+					<p class="text-muted" data-no-comments>No comments yet.</p>
+				</bx:if>
+				<bx:loop array="#data.commentsTree#" index="c">
+					#new "lib.CommentRenderer"().renderNode( c, data.isIdentified ? data.currentUser.id : "", data.isForumModerator, data.post.users_id )#
+				</bx:loop>
+			</div>
+		</div>
+		<div class="d-none d-lg-block col-lg-3 p-2 order-lg-3"></div>
+	</div>
+</div>
+</bx:output>

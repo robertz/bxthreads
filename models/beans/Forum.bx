@@ -1,0 +1,409 @@
+/**
+ * Represents a forum (sub-community) within the application.
+ *
+ * Handles persistence and retrieval of forum data, including computed aggregate
+ * properties (subscriber count, post/comment counts, moderator list). Both
+ * Both `getByName()` and `getByIdShort()` cache results in `dismalCache` under
+ * a single canonical key `forum:{id_short}`. Call `invalidateCache(id_short)`
+ * after any mutation.
+ *
+ * Both load methods share a private `loadForum()` helper containing the full
+ * SQL query. Moderators are identified by the `permissions_id` FK on the Forums row,
+ * which points directly to the Permissions record created at forum creation.
+ *
+ * NOTE: the source app read the acting user's id from ColdBox's request-scoped
+ * `client.uid` in `save()` (new-forum owner) and `userIsSubscribed()`. There is no
+ * request-scoped `client` scope under boxlang-express, so:
+ *   - `save()` now uses `variables.owner` as the acting user's UUID when creating a
+ *     new forum — callers MUST call `setOwner(actingUserId)` before `save()` when
+ *     creating a forum (on an existing/loaded forum, `owner` holds the username from
+ *     `loadForum()` and is not touched by the update path, so this is safe).
+ *   - `userIsSubscribed()` now takes `users_id` as a required argument instead of
+ *     reading `client.uid`.
+ *
+ * @property {string}  id          - Full UUID of the forum
+ * @property {string}  id_short    - First 8 characters of the UUID
+ * @property {string}  display     - Unique display name (used in URLs)
+ * @property {string}  about       - Forum description shown on the forum page
+ * @property {string}  icon        - Icon identifier for the forum
+ * @property {string}  owner       - Username of the forum owner (or, transiently before
+ *                                   save() on a new forum, the acting user's UUID — see note above)
+ * @property {numeric} deleted     - 0 = active, 1 = soft-deleted
+ * @property {string}  created_at  - DB creation timestamp
+ * @property {string}  updated_at  - DB last-update timestamp
+ * @property {numeric} subscribed  - 1 if the queried user is subscribed, 0 otherwise (computed)
+ * @property {numeric} subscribers - Total subscriber count (computed)
+ * @property {numeric} posts       - Total non-deleted post count (computed)
+ * @property {numeric} comments    - Total non-deleted comment count (computed)
+ * @property {string}  moderators  - Comma-separated moderator usernames (computed)
+ * @property {numeric} is_private  - 1 if the forum is private (invite-only), 0 if public
+ */
+class accessors="true" {
+
+	property name="id";
+	property name="id_short";
+	property name="display";
+	property name="about";
+	property name="icon";
+	property name="owner";
+	property name="permissions_id";
+	property name="deleted";
+	property name="created_at";
+	property name="updated_at";
+	// computed
+	property name="subscribed"  default="0";
+	property name="subscribers" default="0";
+	property name="posts"       default="0";
+	property name="comments"    default="0";
+	property name="moderators"  default="";
+	property name="is_private"  default="0";
+
+	/**
+	 * Initializes the Forum bean instance with default values.
+	 * Called automatically by AppContext's scanDirectory() on instantiation.
+	 *
+	 * @return {Forum} This instance.
+	 */
+	function init(){
+		variables.populate    = new "lib.AppContext"().get( "Populate" );
+		variables.id          = "";
+		variables.id_short    = "";
+		variables.display     = "";
+		variables.about       = "";
+		variables.icon        = "";
+		variables.owner          = "";
+		variables.permissions_id = "";
+		variables.deleted        = "";
+		variables.created_at  = "";
+		variables.updated_at  = "";
+		// computed
+		variables.subscribed  = "0";
+		variables.subscribers = "0";
+		variables.posts       = "0";
+		variables.comments    = "0";
+		variables.moderators  = "";
+		variables.is_private  = "0";
+		return this;
+	}
+
+	/**
+	 * Returns a plain-struct snapshot of all forum properties including computed values.
+	 *
+	 * @return {struct} All forum fields.
+	 */
+	function getMemento(){
+		return {
+			"id"          : variables.id,
+			"id_short"    : variables.id_short,
+			"display"     : variables.display,
+			"about"       : variables.about,
+			"icon"        : variables.icon,
+			"owner"          : variables.owner,
+			"permissions_id" : variables.permissions_id,
+			"deleted"        : variables.deleted,
+			"created_at"  : variables.created_at,
+			"updated_at"  : variables.updated_at,
+			"subscribed"  : variables.subscribed,
+			"subscribers" : variables.subscribers,
+			"posts"       : variables.posts,
+			"comments"    : variables.comments,
+			"moderators"  : variables.moderators,
+		"is_private"  : variables.is_private
+		}
+	}
+
+	/**
+	 * Loads a forum by its display name and populates this bean.
+	 * Resolves display name to id_short, then delegates to the canonical
+	 * `forum:{id_short}` cache key.
+	 * Only non-deleted forums are returned.
+	 *
+	 * @param {string} forum - The forum's display name (case-sensitive, matches the URL slug).
+	 * @return {Forum} This instance, populated if the forum was found.
+	 */
+	function getByName( required string forum ){
+		var forumName = arguments.forum;
+		var idShort   = resolveIdShort( forumName );
+		if ( !len( idShort ) ) return this;
+		return getByIdShort( idShort );
+	}
+
+	/**
+	 * Loads a forum by its 8-character short ID and populates this bean.
+	 * Retrieves computed aggregates (subscribers, posts, comments, moderators).
+	 * Result is cached in `dismalCache` under `forum:{id_short}`.
+	 * Only non-deleted forums are returned.
+	 *
+	 * @param {string} id       - The 8-character short ID from the URL.
+	 * @param {string} users_id - Accepted but unused; retained for API compatibility.
+	 * @return {Forum} This instance, populated if the forum was found.
+	 */
+	function getByIdShort( required string id, string users_id = new "lib.AppContext"().get( "Config" ).getDefaultUser() ){
+		var idToLoad  = arguments.id;
+		var cacheKey  = "forum:" & idToLoad;
+		var forumData = cache( "dismalCache" ).getOrSet(
+			cacheKey,
+			() => loadForum(
+				"F.deleted = 0 AND F.id_short = :id_short",
+				{ "id_short" : { value : idToLoad, cfsqltype : "cf_sql_varchar" } }
+			)
+		);
+		if ( !forumData.isEmpty() ) variables.populate.populateFromStruct( target = this, memento = forumData );
+		return this;
+	}
+
+	/**
+	 * Clears the canonical `forum:{id_short}` and `admin:forums` cache entries.
+	 * Call this after any mutation that changes forum data.
+	 *
+	 * @param {string} forumIdShort - The 8-character short ID of the forum to invalidate.
+	 */
+	function invalidateCache( required string forumIdShort ){
+		cache( "dismalCache" ).clear( "forum:" & arguments.forumIdShort );
+		cache( "dismalCache" ).clear( "admin:forums" );
+	}
+
+	/**
+	 * Creates or updates a forum in the database.
+	 *
+	 * On creation, three additional operations run in the same transaction:
+	 * 1. The owner is auto-subscribed to the new forum (UsersForums).
+	 * 2. A moderator permission record is created (`FORUM_MODERATOR_{UPPER(display)}`).
+	 * 3. That permission is assigned to the owner (UsersPermissions).
+	 *
+	 * On update, only the `about` and `icon` fields are modified. The `display`
+	 * name is intentionally excluded from updates because it is used in URLs and
+	 * cache keys (`forum:{display}`).
+	 *
+	 * On failure the transaction is rolled back and the error is written to the log.
+	 *
+	 * NOTE: on creation, `variables.owner` is used as the acting user's UUID (see
+	 * class-level doc comment) — call `setOwner(actingUserId)` before `save()`.
+	 *
+	 * @return {boolean} true on success, false on database error.
+	 */
+	function save(){
+		transaction {
+			try {
+				var isNew = false;
+				if ( !hasLoaded() ) {
+					setId( lCase( createGUID() ) );
+					isNew = true;
+				}
+
+				// storing a new forum
+				if ( isNew ) {
+					var permissions_id = lCase( createGUID() );
+					var qparams = {
+						id             : { value : variables.id, cfsqltype : "cf_sql_varchar" },
+						owner          : { value : variables.owner, cfsqltype : "cf_sql_varchar" },
+						display        : { value : variables.display, cfsqltype : "cf_sql_varchar" },
+						about          : { value : variables.about, cfsqltype : "cf_sql_varchar" },
+						permissions_id : { value : permissions_id, cfsqltype : "cf_sql_varchar" }
+					};
+
+					// create moderator permission for the new forum (must exist before the FK is written)
+					var sql = "
+						INSERT INTO Permissions (id, permission)
+						VALUES (UUID_TO_BIN(:permissions_id), CONCAT('FORUM_MODERATOR_', UCASE(:display)))
+					";
+
+					queryExecute( sql, qparams );
+
+					// insert forum with permissions_id FK
+					var sql = "
+						INSERT INTO Forums (id, owner, display, about, permissions_id)
+						VALUES (UUID_TO_BIN(:id), UUID_TO_BIN(:owner), :display, :about, UUID_TO_BIN(:permissions_id))
+					";
+
+					queryExecute( sql, qparams );
+
+					// The owner should subscribe to the new forum
+					var sql = "
+						INSERT INTO UsersForums (users_id, forums_id)
+						VALUES (UUID_TO_BIN(:owner), UUID_TO_BIN(:id))
+					";
+
+					queryExecute( sql, qparams );
+
+					// link the moderator permissions to the owner
+					var sql = "
+						INSERT INTO UsersPermissions (users_id, permissions_id)
+						VALUES (UUID_TO_BIN(:owner), UUID_TO_BIN(:permissions_id))
+					";
+
+					queryExecute( sql, qparams );
+				} else {
+					// updating an existing forum (about, icon, and is_private)
+					var sql = "
+						UPDATE Forums
+						SET about = :about, icon = :icon, is_private = :is_private
+						WHERE id = UUID_TO_BIN(:id)
+					";
+					var qparams = {
+						id         : { value : variables.id,         cfsqltype : "cf_sql_varchar" },
+						about      : { value : variables.about,       cfsqltype : "cf_sql_varchar" },
+						icon       : { value : variables.icon,        cfsqltype : "cf_sql_varchar" },
+						is_private : { value : variables.is_private,  cfsqltype : "cf_sql_tinyint" }
+					};
+					queryExecute( sql, qparams );
+				}
+
+				transaction action="commit";
+				return true;
+			} catch ( any e ) {
+				transaction action="rollback";
+				new "lib.AppContext"().get( "Logger" ).error( "Error saving forum: " & e.message & " " & e.detail );
+				return false;
+			}
+		}
+	}
+
+	/**
+	 * Returns whether this bean has been loaded with database data.
+	 *
+	 * @return {boolean} true if `id` is non-empty.
+	 */
+	function hasLoaded(){
+		return len( variables.id ) ? true : false;
+	}
+
+	/**
+	 * Reloads forum data from the database using the current `id_short`.
+	 *
+	 * @param {string} users_id - Passed through to `getByIdShort()` for API compatibility.
+	 * @return {Forum} This instance with refreshed data.
+	 */
+	function reload( string users_id = new "lib.AppContext"().get( "Config" ).getDefaultUser() ){
+		getByIdShort( variables.id_short, arguments.users_id );
+		return this;
+	}
+
+	/**
+	 * Checks whether the given user is subscribed to this forum.
+	 * The bean must be loaded before calling this.
+	 *
+	 * @param {string} users_id - UUID of the user to check (was `client.uid` in the source app;
+	 *                            there is no request-scoped session inside a bean here, so the
+	 *                            caller must supply it explicitly).
+	 * @return {boolean} true if subscribed, false otherwise.
+	 */
+	function userIsSubscribed( required string users_id ){
+		var result = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM UsersForums WHERE forums_id = UUID_TO_BIN(:forums_id) AND users_id = UUID_TO_BIN(:users_id)",
+			{
+				forums_id: { value: variables.id, cfsqltype: "cf_sql_varchar" },
+				users_id:  { value: arguments.users_id, cfsqltype: "cf_sql_varchar" }
+			},
+			{ returnType: "array" }
+		);
+		return result.len() && result[ 1 ].cnt > 0;
+	}
+
+	// -------------------------------------------------------------------------
+	// Private
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Resolves a forum display name to its id_short via a lightweight query.
+	 *
+	 * @param {string} display - Forum display name.
+	 * @return {string} The 8-character id_short, or "" if not found.
+	 */
+	private string function resolveIdShort( required string display ){
+		var result = queryExecute(
+			"SELECT id_short FROM Forums WHERE display = :display AND deleted = 0 LIMIT 1",
+			{ "display" : { value : arguments.display, cfsqltype : "cf_sql_varchar" } },
+			{ returnType : "array" }
+		);
+		return result.len() ? result[ 1 ].id_short : "";
+	}
+
+	/**
+	 * Executes the forum detail query with a caller-supplied WHERE clause and
+	 * returns the result as a struct (or empty struct if not found).
+	 * Shared by `getByName()` and `getByIdShort()` to avoid SQL duplication.
+	 *
+	 * @param {string} whereClause - SQL fragment appended to the ForumDetails CTE WHERE.
+	 *                               Must only reference safe, internal values.
+	 * @param {struct} qParams     - Query parameter struct matching the WHERE clause.
+	 * @return {struct} Forum data struct with id, id_short, display, about, icon,
+	 *                 permissions_id, deleted, owner, subscribers, posts, comments,
+	 *                 moderators; or `{}` if no matching forum was found.
+	 */
+	private function loadForum( required string whereClause, required struct qParams ){
+		var res = {};
+		var sql = "
+			WITH ForumDetails AS (
+				SELECT
+					F.id AS forums_id,
+					F.id_short,
+					F.created_at,
+					F.updated_at,
+					F.display,
+					F.about,
+					F.icon,
+					F.deleted,
+					F.owner,
+					F.permissions_id,
+					F.is_private
+				FROM Forums F
+				WHERE #arguments.whereClause#
+			),
+			SubscribersCount AS (
+				SELECT forums_id, COUNT(*) AS subscriber_count
+				FROM UsersForums
+				GROUP BY forums_id
+			),
+			PostsCount AS (
+				SELECT forums_id, COUNT(*) AS post_count
+				FROM Posts
+				WHERE deleted = FALSE
+				GROUP BY forums_id
+			),
+			CommentsCount AS (
+				SELECT forums_id, COUNT(*) AS comment_count
+				FROM Comments
+				WHERE deleted = FALSE
+				GROUP BY forums_id
+			),
+			ModeratorList AS (
+				SELECT
+					FD.forums_id,
+					GROUP_CONCAT(U.user_name) AS moderator_list
+				FROM ForumDetails FD
+				JOIN Permissions P ON P.id = FD.permissions_id
+				JOIN UsersPermissions UP ON UP.permissions_id = P.id
+				JOIN Users U ON U.id = UP.users_id
+				GROUP BY FD.forums_id
+			)
+			SELECT
+				BIN_TO_UUID(FD.forums_id) AS id,
+				FD.id_short,
+				FD.created_at,
+				FD.updated_at,
+				FD.display,
+				FD.about,
+				FD.icon,
+				BIN_TO_UUID(FD.permissions_id) AS permissions_id,
+				FD.deleted,
+				FD.is_private,
+				U.user_name AS owner,
+				COALESCE(SC.subscriber_count, 0) AS subscribers,
+				COALESCE(PC.post_count, 0) AS posts,
+				COALESCE(CC.comment_count, 0) AS comments,
+				COALESCE(ML.moderator_list, '') AS moderators
+			FROM ForumDetails FD
+			JOIN Users U ON U.id = FD.owner
+			LEFT JOIN SubscribersCount SC ON SC.forums_id = FD.forums_id
+			LEFT JOIN PostsCount PC ON PC.forums_id = FD.forums_id
+			LEFT JOIN CommentsCount CC ON CC.forums_id = FD.forums_id
+			LEFT JOIN ModeratorList ML ON ML.forums_id = FD.forums_id
+			LIMIT 1;
+		";
+		var f = queryExecute( sql, arguments.qParams, { returnType : "array" } );
+		if ( f.len() ) res.append( f[ 1 ] );
+		return res;
+	}
+
+}

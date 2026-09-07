@@ -1,0 +1,213 @@
+<!--- Global helper functions available to every view/layout — ported from the source app's
+      ColdBox `applicationHelper` (includes/helpers/ApplicationHelper.bxm) plus a slug helper
+      (originally a ColdBox core StringUtil delegate method, not actually defined in that helper
+      file). Included once per render from lib/View.bx::renderToString() — `include` shares the
+      caller's local scope, so these become callable bare (`slugifyText(x)`) from any view/layout
+      included afterward in that same render, same as the source app's mechanism.
+
+      Named `slugifyText`, not `slugify` — this BoxLang installation has a built-in global BIF
+      literally named `slugify` (confirmed via a bare `slugify("x")` call with nothing defined or
+      included: it still resolves and returns a value) that silently wins over any user-declared
+      function of the same name, in every context tried (bare included function, a class's own
+      private method called from within that same class). A same-named function/method is not an
+      override, it's dead code — this had been true of every `slugify()`/`slugifyTitle()` in this
+      codebase using that exact name; only AppRouter.bx's `slugifyTitle` accidentally escaped it by
+      already having a different name. Renaming is simpler and more robust than qualifying every
+      call site with `variables.`/`this.` (which doesn't reliably reach a bare-included function's
+      scope from inside a view anyway) — pick any name that isn't a real BIF before adding a new
+      helper here, or it will never run. --->
+<bx:script>
+
+	/**
+	 * Slugify a string for URL safety.
+	 */
+	function slugifyText( required str, numeric maxLength = 0 ) {
+		var slug = lCase( trim( arguments.str ) );
+		slug     = replaceList( slug, "ä,ü,ö,ß", "ae,ue,oe,ss" );
+		// Replace (not delete) any disallowed character with a hyphen placeholder, so punctuation
+		// sitting right next to a space collapses into the SAME hyphen run as that space in the
+		// next step, instead of leaving a separate stripped gap that survives as a double hyphen.
+		slug     = reReplace( slug, "[^a-z0-9\s-]", "-", "all" );
+		slug     = reReplace( slug, "[\s-]+", "-", "all" );
+		slug     = reReplace( slug, "^-+|-+$", "", "all" );
+		if ( arguments.maxlength ) {
+			slug = left( slug, arguments.maxlength );
+		}
+		return slug;
+	}
+
+	/**
+	 * momentFrom( target, reference=now(), withoutSuffix=false )
+	 * Mimics moment(a).from(b) — assumes all dates are in UTC.
+	 */
+	function momentFrom( required any target, any reference = now(), boolean withoutSuffix = false ) {
+		var ZoneId        = createObject( "java", "java.time.ZoneId" );
+		var Instant       = createObject( "java", "java.time.Instant" );
+		var ZonedDateTime = createObject( "java", "java.time.ZonedDateTime" );
+		var Duration      = createObject( "java", "java.time.Duration" );
+		var zone = ZoneId.of( "UTC" );
+		var toZDT = function( any x ) {
+			if ( isNumeric( x ) ) {
+				var n  = javacast( "long", x );
+				var ms = ( n GT 9999999999 ) ? n : n * 1000;
+				return Instant.ofEpochMilli( javacast( "long", ms ) ).atZone( zone );
+			}
+			var d = x;
+			if ( !isInstanceOf( d, "java.util.Date" ) ) {
+				d = parseDateTime( javacast( "string", x ) );
+			}
+			return Instant.ofEpochMilli( javacast( "long", d.getTime() ) ).atZone( zone );
+		};
+		var t       = toZDT( arguments.target );
+		var ref     = toZDT( arguments.reference );
+		var seconds = Duration.between( ref, t ).getSeconds();
+		var future  = ( seconds GT 0 );
+		var absSec  = abs( seconds );
+		var days    = absSec / 86400;
+		var phrase  = "";
+		if      ( absSec < 45 )     phrase = "just now";
+		else if ( absSec < 90 )     phrase = "1m";
+		else if ( absSec < 2700 )   phrase = round( absSec / 60 ) & "m";
+		else if ( absSec < 5400 )   phrase = "1h";
+		else if ( absSec < 79200 )  phrase = round( absSec / 3600 ) & "h";
+		else if ( absSec < 129600 ) phrase = "1d";
+		else if ( days   < 26 )     phrase = round( days ) & "d";
+		else if ( days   < 45 )     phrase = "1mo";
+		else if ( days   < 320 )    phrase = round( days / 30 ) & "mo";
+		else if ( days   < 548 )    phrase = "1y";
+		else                        phrase = round( days / 365 ) & "y";
+		if ( arguments.withoutSuffix ) {
+			return phrase;
+		}
+		return future ? "in #phrase#" : phrase;
+	}
+
+	function getBaseDomain( required string urlString ) {
+		var host = "";
+		var u = trim( arguments.urlString );
+		if ( NOT reFind( "^[a-zA-Z][a-zA-Z0-9+\-.]*://", u ) ) {
+			u = "http://" & u;
+		}
+		try {
+			host = createObject( "java", "java.net.URL" ).init( u ).getHost();
+		} catch ( any e ) {
+			var match = reFindNoCase( "^(?:https?://)?([^/:?##]+)", arguments.urlString, 1, true );
+			if ( arrayLen( match.pos ) >= 2 ) {
+				host = mid( arguments.urlString, match.pos[2], match.len[2] );
+			}
+		}
+		host = trim( host );
+		if ( host EQ "" ) return "";
+		var multiTLDs = [
+			"co.uk", "org.uk", "gov.uk", "ac.uk",
+			"co.jp", "ne.jp", "or.jp",
+			"com.au", "net.au", "org.au",
+			"co.nz", "net.nz",
+			"co.kr", "ne.kr"
+		];
+		var parts = listToArray( host, "." );
+		var partCount = arrayLen( parts );
+		for ( var tld in multiTLDs ) {
+			if ( right( host, len( tld ) ) == tld ) {
+				var labels = listToArray( host, "." );
+				var tldSegments = listToArray( tld, "." );
+				if ( arrayLen( labels ) > arrayLen( tldSegments ) ) {
+					return labels[ arrayLen( labels ) - arrayLen( tldSegments ) ] & "." & tld;
+				}
+			}
+		}
+		if ( partCount >= 2 ) {
+			return parts[ partCount - 1 ] & "." & parts[ partCount ];
+		}
+		return host;
+	}
+
+	/**
+	 * Returns the /go/:link interstitial URL for an external href.
+	 */
+	function goUrl( required string href ) {
+		var u = trim( arguments.href );
+		if ( !len( u ) ) return "";
+		return "/go/" & toBase64( u );
+	}
+
+	/**
+	 * Rewrites all <a> tags in an HTML string to be safe for user-facing display.
+	 * Delegates to UtilityService::enhanceAnchorsInHtml().
+	 */
+	function enhanceAnchorsInHtml( required string html ) {
+		return new "lib.AppContext"().get( "UtilityService" ).enhanceAnchorsInHtml( arguments.html );
+	}
+
+	/**
+	 * Extracts a YouTube video id from a watch/embed/shorts/live/youtu.be URL, or "" if the URL
+	 * isn't a recognized YouTube link. Consolidates what the source app duplicated separately in
+	 * wires/post/viewlink.bx and wires/feed/item.bx into one shared helper.
+	 *
+	 * One regex instead of three separate string-replace passes: matches any protocol (or none),
+	 * the www/m/music subdomains, youtube.com and youtube-nocookie.com, and the watch/embed/
+	 * shorts/live path shapes plus youtu.be — then captures exactly 11 id characters, which both
+	 * validates the extracted value looks like a real YouTube id (rather than trusting whatever
+	 * follows "v=" up to the next "&") and naturally ignores any trailing query string/fragment
+	 * without a separate listFirst()/listRest() cleanup step per URL shape.
+	 */
+	function youtubeId( required string url ) {
+		var u = trim( arguments.url );
+		if ( !len( u ) ) return "";
+		var pattern = "(?:youtube(?:-nocookie)?\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|live/)|youtu\.be/)([\w-]{11})";
+		var match = reFindNoCase( pattern, u, 1, true );
+		if ( arrayLen( match.pos ) >= 2 ) {
+			return mid( u, match.pos[2], match.len[2] );
+		}
+		return "";
+	}
+
+	/**
+	 * Extracts a Vimeo video id from a vimeo.com/player.vimeo.com URL, or "" if the URL isn't a
+	 * recognized Vimeo link. Handles the bare "vimeo.com/ID" share-link form, the
+	 * "player.vimeo.com/video/ID" embed form, "vimeo.com/channels/NAME/ID" and
+	 * "vimeo.com/groups/NAME/videos/ID", and an unlisted video's "/ID/HASH" private-link suffix
+	 * (needed for the embed URL to actually play an unlisted video — vimeo.com's own share/embed
+	 * links include this in the path, not a query string, so player.vimeo.com/video/ID/HASH
+	 * works directly as the iframe src with no further param-building).
+	 */
+	function vimeoId( required string url ) {
+		var u = trim( arguments.url );
+		if ( !len( u ) ) return "";
+		var pattern = "vimeo\.com/(?:channels/[\w-]+/|groups/[\w-]+/videos/|video/)?(\d+)(?:/([\w-]+))?";
+		var match = reFindNoCase( pattern, u, 1, true );
+		if ( arrayLen( match.pos ) >= 2 && match.len[2] > 0 ) {
+			var id = mid( u, match.pos[2], match.len[2] );
+			if ( arrayLen( match.pos ) >= 3 && match.len[3] > 0 ) {
+				return id & "/" & mid( u, match.pos[3], match.len[3] );
+			}
+			return id;
+		}
+		return "";
+	}
+
+	/**
+	 * Extracts a Twitch clip slug from a clips.twitch.tv/... or twitch.tv/CHANNEL/clip/... URL,
+	 * or "" if the URL isn't a recognized Twitch clip link. Only clips, not full VODs/live
+	 * channels — those need a different embed shape (channel= vs video= vs clip=) this app has
+	 * no use case for yet.
+	 *
+	 * Unlike youtubeId()/vimeoId(), this deliberately returns only the slug, not a ready-to-use
+	 * embed URL — Twitch's embed player requires a `parent` query param naming the embedding
+	 * page's own hostname (a CSP-like allowlist Twitch enforces itself), which isn't known at
+	 * render time for a value that might get cached/reused across requests. The actual
+	 * `clips.twitch.tv/embed?clip=...&parent=...` src is built client-side from
+	 * `location.hostname` instead — see public/assets/js/global.js's twitchEmbedsHandler().
+	 */
+	function twitchClipSlug( required string url ) {
+		var u = trim( arguments.url );
+		if ( !len( u ) ) return "";
+		var pattern = "(?:clips\.twitch\.tv/|twitch\.tv/[\w-]+/clip/)([\w-]+)";
+		var match = reFindNoCase( pattern, u, 1, true );
+		if ( arrayLen( match.pos ) >= 2 && match.len[2] > 0 ) {
+			return mid( u, match.pos[2], match.len[2] );
+		}
+		return "";
+	}
+
+</bx:script>
