@@ -34,9 +34,22 @@ app.set( "views", expandPath( "./views" ) )
 app.use( boxExpressUrlencoded() )
 app.use( boxExpressJSON() )
 
-// No esbuild output in this project yet — every view falls back to its unhashed /assets/...
-// path. Revisit once a real build step exists (see lib/RequestContext.bx's own note).
+// Prefers the minified build (`npm run build`, see package.json / scripts/build-assets.mjs)
+// when it's been run; falls back per-file to the raw /assets/... path otherwise (see
+// views/layouts/Main.bxm's keyExists() checks and lib/RequestContext.bx's own note) — so a
+// checkout that hasn't run the asset build still works.
 app.locals.assets = {}
+assetBuildCandidates = [
+	{ src: "site.css",     min: "/assets/css/site.min.css" },
+	{ src: "global.js",    min: "/assets/js/global.min.js" },
+	{ src: "actions.js",   min: "/assets/js/actions.min.js" },
+	{ src: "realtime.js",  min: "/assets/js/realtime.min.js" }
+]
+for ( pair in assetBuildCandidates ) {
+	if ( fileExists( expandPath( "./public" & pair.min ) ) ) {
+		app.locals.assets[ pair.src ] = pair.min
+	}
+}
 
 /**
  * Security headers — direct port of handlers/Main.bx::onRequestStart(). Kept as one explicit
@@ -61,6 +74,10 @@ app.use( ( req, res, next ) => {
 	res.set( "X-Content-Type-Options", "nosniff" )
 	res.set( "X-Frame-Options", "DENY" )
 	res.set( "X-XSS-Protection", "1; mode=block" )
+	// Browsers only honor HSTS over an actual HTTPS response, so this is a no-op (not a
+	// dev-breaking one) when running plain HTTP locally.
+	res.set( "Strict-Transport-Security", "max-age=15552000; includeSubDomains" )
+	res.set( "Cross-Origin-Opener-Policy", "same-origin" )
 	next()
 } )
 
@@ -106,7 +123,14 @@ app.use( ( req, res, next ) => {
 // Mounted at root, not "/public" — the source app's views reference root-relative paths
 // (/assets/css/site.css, /favicon.svg) matching its own webroot layout; public/ here just
 // holds those same files instead of the whole webroot.
-app.use( boxExpressStatic( expandPath( "./public" ) ) )
+//
+// Two-tier Cache-Control: vendored web fonts never change without a manual replace, so they
+// get a long-lived cache. Everything else (site.css, global.js, etc.) has no hashed/versioned
+// filename yet — see the app.locals.assets note above — so a long cache there would mean a
+// stale asset can outlive a deploy for up to the maxAge; a short one bounds that risk until a
+// real build step adds cache-busted filenames.
+app.use( "/assets/icons/fonts", boxExpressStatic( expandPath( "./public/assets/icons/fonts" ), { maxAge: 60 * 60 * 24 * 365 } ) )
+app.use( boxExpressStatic( expandPath( "./public" ), { maxAge: 60 * 60 * 24 } ) )
 
 actionsRouter = boxExpressRouter()
 new "routes.ActionsRouter"().register( app, actionsRouter )

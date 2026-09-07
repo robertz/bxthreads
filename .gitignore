@@ -13,6 +13,9 @@ boxlang_modules/**
 .engine/**
 .cbfs/**
 
+# Generated image-proxy thumbnail cache (models/services/ImageProxyService.bx)
+.cache/**
+
 # npm (asset build tooling — esbuild)
 node_modules/**
 npm-debug.log

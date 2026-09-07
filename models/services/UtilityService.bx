@@ -88,6 +88,24 @@ class {
 		return out;
 	}
 
+	/**
+	 * Strips heading semantics (role="presentation") from all <h1>-<h6> tags in an HTML
+	 * string, while leaving their visual styling (which is selected by tag name in CSS)
+	 * untouched.
+	 *
+	 * Used on truncated post-preview snippets (e.g. feed cards), where a user's markdown
+	 * body can contain arbitrary heading levels. Rendered as real headings, those would
+	 * jump levels against the fixed h5 card title and fail Lighthouse/axe's heading-order
+	 * audit — a preview snippet isn't a real document outline, so the fix is to keep the
+	 * look but drop the semantics rather than force one "correct" heading level.
+	 *
+	 * @html The HTML string to process (e.g. output of getSafeHTML(markdown(body))).
+	 * @return The input HTML with all heading tags marked role="presentation".
+	 */
+	string function neutralizeHeadingsInHtml( required string html ) {
+		return reReplaceNoCase( arguments.html, '<h([1-6])\b([^>]*)>', '<h\1\2 role="presentation">', "all" );
+	}
+
 	// ── Private helpers ───────────────────────────────────────────────────
 
 	/**
@@ -100,12 +118,34 @@ class {
 	private string function enhanceSingleAnchorTag( required string tag ) {
 		var t = arguments.tag;
 		t = rewriteExternalHref( t );
+		if ( isHeadingAnchorTag( t ) ) {
+			t = ensureValueAttribute( t, "aria-label", "Link to this heading" );
+		}
 		t = ensureTokenAttribute( t, "class",  "post-link" );
 		t = ensureTokenAttribute( t, "rel",    "noopener" );
 		t = ensureTokenAttribute( t, "rel",    "nofollow" );
 		t = ensureTokenAttribute( t, "rel",    "ugc" );
 		t = ensureValueAttribute( t, "target", "_blank", true );
 		return t;
+	}
+
+	/**
+	 * Detects flexmark's heading-permalink anchors (bx-markdown's anchorLinks setting,
+	 * class="anchor" per boxlang_modules/bx-markdown/ModuleConfig.bx) — these are rendered
+	 * with no text content, which fails Lighthouse's link-name audit unless given a label.
+	 *
+	 * @tag A single opening <a ...> tag string.
+	 * @return True if the tag's class attribute contains the "anchor" token.
+	 */
+	private boolean function isHeadingAnchorTag( required string tag ) {
+		var attrRegex = '\bclass\s*=\s*"([^"]*)"';
+		var m         = reFindNoCase( attrRegex, arguments.tag, 1, true );
+
+		if ( !isStruct(m) || !arrayLen(m.pos) || m.pos[1] == 0 || arrayLen(m.pos) < 2 ) {
+			return false;
+		}
+
+		return listFindNoCase( mid( arguments.tag, m.pos[2], m.len[2] ), "anchor", " " ) > 0;
 	}
 
 	/**

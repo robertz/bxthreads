@@ -1,0 +1,12 @@
+{
+	"name": "bxthreads-assets",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Static asset build (CSS/JS minification) for bxThreads. The app itself runs on BoxLang — see box.json.",
+	"scripts": {
+		"build": "node scripts/build-assets.mjs"
+	},
+	"devDependencies": {
+		"esbuild": "^0.24.0"
+	}
+}

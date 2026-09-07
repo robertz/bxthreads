@@ -1,0 +1,134 @@
+/**
+ * ImageProxyService
+ *
+ * Fetches an external link-preview image (a post's scraped og:image, stored as-is by
+ * SpiderService — see models/services/SpiderService.bx) and resizes it server-side to the
+ * size it's actually displayed at, so the browser downloads a ~10KB thumbnail instead of
+ * whatever full-resolution image the source site happens to serve. Results are cached to
+ * disk by (url, width, height) so the same link-preview image is only fetched/resized once.
+ *
+ * SSRF guard mirrors SpiderService.isSafeSpiderUrl() exactly (same reasoning, duplicated
+ * rather than shared since there's no common "NetworkSafety" utility yet): the URL must be
+ * http(s) and every address it resolves to must be public — no loopback, link-local,
+ * RFC-1918, or any-local. Redirects are not followed, since a same-safety-check on the
+ * redirect target would still be needed and jsoup's connect() doesn't expose per-hop
+ * validation.
+ */
+class {
+
+	private boolean function isSafeUrl( required string targetUrl ) {
+		var lower = arguments.targetUrl.lCase();
+		if ( lower.left(7) != "http://" && lower.left(8) != "https://" ) return false;
+		try {
+			var uri  = createObject( "java", "java.net.URI" ).init( arguments.targetUrl );
+			var host = uri.getHost();
+			if ( !len( host ) ) return false;
+			var addresses = createObject( "java", "java.net.InetAddress" ).getAllByName( host );
+			for ( var addr in addresses ) {
+				if ( addr.isLoopbackAddress()  ) return false;
+				if ( addr.isLinkLocalAddress() ) return false;
+				if ( addr.isSiteLocalAddress() ) return false;
+				if ( addr.isAnyLocalAddress()  ) return false;
+			}
+			return true;
+		} catch ( any e ) {
+			return false;
+		}
+	}
+
+	/**
+	 * Returns the on-disk path to a cached, resized JPEG thumbnail for sourceUrl, fetching
+	 * and generating it first if it isn't cached yet.
+	 *
+	 * @sourceUrl The external image URL (a post's link_image / og:image).
+	 * @width     Target display width in pixels.
+	 * @height    Target display height in pixels.
+	 * @return Absolute path to a JPEG file sized exactly width x height.
+	 * @throws ImageProxyService.UnsafeUrl, .FetchFailed, .NotAnImage, .DecodeFailed
+	 */
+	function getThumbnailPath( required string sourceUrl, numeric width = 160, numeric height = 108 ) {
+		if ( !isSafeUrl( arguments.sourceUrl ) ) {
+			throw( type: "ImageProxyService.UnsafeUrl", message: "URL rejected: #arguments.sourceUrl#" );
+		}
+
+		var cacheDir = expandPath( "./.cache/img-thumbs" );
+		if ( !directoryExists( cacheDir ) ) {
+			directoryCreate( cacheDir, true );
+		}
+
+		var cacheKey  = hash( arguments.sourceUrl & "|" & arguments.width & "|" & arguments.height, "SHA-256" );
+		var cachePath = cacheDir & "/" & cacheKey & ".jpg";
+
+		if ( fileExists( cachePath ) ) {
+			return cachePath;
+		}
+
+		var jSoup = createObject( "java", "org.jsoup.Jsoup@bxjsoup" );
+		var response = jSoup
+			.connect( arguments.sourceUrl )
+			.timeout( 5000 )
+			.followRedirects( false )
+			.ignoreHttpErrors( true )
+			.ignoreContentType( true )
+			.maxBodySize( 8 * 1024 * 1024 )
+			.userAgent( "Mozilla/5.0 (compatible; bxThreadsImageProxy/1.0)" )
+			.execute();
+
+		if ( response.statusCode() != 200 ) {
+			throw( type: "ImageProxyService.FetchFailed", message: "Upstream returned HTTP #response.statusCode()#" );
+		}
+
+		var contentType = response.contentType();
+		if ( isNull( contentType ) || !reFindNoCase( "^image/", contentType ) ) {
+			throw( type: "ImageProxyService.NotAnImage", message: "Upstream did not return an image (#contentType ?: 'no content-type'#)" );
+		}
+
+		var resizedBytes = resizeCover( response.bodyAsBytes(), arguments.width, arguments.height );
+		fileWrite( cachePath, resizedBytes );
+
+		return cachePath;
+	}
+
+	/**
+	 * Scales imageBytes so the shorter side exactly fills targetWidth x targetHeight, then
+	 * crops the overflow from the center — matches the CSS `object-fit: cover` already
+	 * applied to this thumbnail client-side (public/assets/css/feed.css,
+	 * .c-feed-post__link-thumb img), so the resize never distorts the image.
+	 */
+	private binary function resizeCover( required binary imageBytes, required numeric targetWidth, required numeric targetHeight ) {
+		var ImageIO = createObject( "java", "javax.imageio.ImageIO" );
+		var bais    = createObject( "java", "java.io.ByteArrayInputStream" ).init( arguments.imageBytes );
+		var source  = ImageIO.read( bais );
+
+		if ( isNull( source ) ) {
+			throw( type: "ImageProxyService.DecodeFailed", message: "Could not decode image (unsupported format?)" );
+		}
+
+		var srcW  = source.getWidth();
+		var srcH  = source.getHeight();
+		var scale = max( arguments.targetWidth / srcW, arguments.targetHeight / srcH );
+
+		var scaledW = ceiling( srcW * scale );
+		var scaledH = ceiling( srcH * scale );
+
+		var BufferedImageClass = createObject( "java", "java.awt.image.BufferedImage" );
+		var scaled = BufferedImageClass.init( scaledW, scaledH, BufferedImageClass.TYPE_INT_RGB );
+		var g2d    = scaled.createGraphics();
+		var RenderingHints = createObject( "java", "java.awt.RenderingHints" );
+		g2d.setRenderingHint( RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR );
+		g2d.drawImage( source, 0, 0, scaledW, scaledH, javacast( "null", "" ) );
+		g2d.dispose();
+
+		var cropX = max( 0, int( ( scaledW - arguments.targetWidth ) / 2 ) );
+		var cropY = max( 0, int( ( scaledH - arguments.targetHeight ) / 2 ) );
+		if ( cropX + arguments.targetWidth  > scaledW ) cropX = scaledW - arguments.targetWidth;
+		if ( cropY + arguments.targetHeight > scaledH ) cropY = scaledH - arguments.targetHeight;
+
+		var cropped = scaled.getSubimage( cropX, cropY, arguments.targetWidth, arguments.targetHeight );
+
+		var baos = createObject( "java", "java.io.ByteArrayOutputStream" ).init();
+		ImageIO.write( cropped, "jpg", baos );
+		return baos.toByteArray();
+	}
+
+}

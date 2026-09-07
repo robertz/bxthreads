@@ -63,6 +63,7 @@ class {
 		r.get( "/u/:user", ( req, res ) => userIndexRoute( req, res ) );
 
 		r.get( "/go/:link", ( req, res ) => goRoute( req, res ) );
+		r.get( "/img/thumb/:src", ( req, res ) => imgThumbRoute( req, res ) );
 
 		// ── Moderator pages (thin shells — real data via /api/*, Phase 4) ──────
 		r.get( "/mod", ( req, res ) => modRoute( req, res, "activity" ) );
@@ -590,6 +591,36 @@ class {
 			return;
 		}
 		variables.View.renderPage( variables.app, arguments.res, "redirect/go", { targetUrl: targetUrl } );
+	}
+
+	/**
+	 * Serves a resized/cached thumbnail of a post's external link-preview image — see
+	 * models/services/ImageProxyService.bx. Any failure (unsafe URL, fetch error, non-image
+	 * response, decode failure) degrades to a plain 404, which is all the calling <img>'s
+	 * onerror handler (lib/FeedItemRenderer.bx) needs to hide the thumbnail — a full HTML
+	 * error page here would just be extra bytes nothing reads.
+	 */
+	function imgThumbRoute( req, res ) {
+		var sourceUrl = "";
+		try {
+			// Reverses lib/FeedItemRenderer.bx::urlSafeBase64Encode() — see its comment for why
+			// this isn't plain toBase64()/toBinary() like /go/:link uses.
+			var b64 = replace( arguments.req.params.src, "-", "+", "all" );
+			b64 = replace( b64, "_", "/", "all" );
+			b64 &= repeatString( "=", ( 4 - ( len( b64 ) % 4 ) ) % 4 );
+			sourceUrl = toString( toBinary( b64 ) );
+		} catch ( any e ) {
+			arguments.res.sendStatus( 404 );
+			return;
+		}
+
+		try {
+			var thumbPath = variables.AppContext.get( "ImageProxyService" ).getThumbnailPath( sourceUrl, 160, 108 );
+			arguments.res.sendFile( thumbPath, { maxAge: 60 * 60 * 24 * 7 } );
+		} catch ( any e ) {
+			variables.AppContext.get( "Logger" ).warn( "imgThumbRoute failed for #sourceUrl# [#e.type ?: ''#]: #e.message#" );
+			arguments.res.sendStatus( 404 );
+		}
 	}
 
 	function modRoute( req, res, pageName ) {

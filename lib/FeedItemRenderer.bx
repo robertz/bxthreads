@@ -143,8 +143,24 @@ class {
 		return "/go/" & toBase64( u );
 	}
 
+	// Standard base64's "+", "/", "=" aren't safe inside a single :param path segment (a
+	// literal "/" would be read as an extra segment boundary by the router) — this is the
+	// URL-safe variant (RFC 4648 §5), used for /img/thumb/:src since (unlike /go/:link's
+	// mostly-alphanumeric inputs) an og:image URL routinely contains characters that land on
+	// "/" in standard base64.
+	private function urlSafeBase64Encode( required string plainText ) {
+		var b64 = toBase64( arguments.plainText );
+		b64 = replace( b64, "+", "-", "all" );
+		b64 = replace( b64, "/", "_", "all" );
+		return reReplace( b64, "=+$", "" );
+	}
+
 	private function enhanceAnchorsInHtml( required string html ) {
 		return new "lib.AppContext"().get( "UtilityService" ).enhanceAnchorsInHtml( arguments.html );
+	}
+
+	private function neutralizeHeadingsInHtml( required string html ) {
+		return new "lib.AppContext"().get( "UtilityService" ).neutralizeHeadingsInHtml( arguments.html );
 	}
 
 	function renderCard( required struct post, required string currentUserId, boolean isModerator = false ) {
@@ -187,7 +203,7 @@ class {
 			var vimeoIdVal = len( ytId ) ? "" : vimeoId( linkUrl );
 			var twitchSlug = ( len( ytId ) || len( vimeoIdVal ) ) ? "" : twitchClipSlug( linkUrl );
 			if ( len( ytId ) || len( vimeoIdVal ) || len( twitchSlug ) ) {
-				html &= '<a class="post-body-anchor" href="' & postUrl & '"><div class="render-link"><h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
+				html &= '<a class="post-body-anchor" href="' & postUrl & '" aria-label="' & encodeForHTMLAttribute( p.title ) & '"><div class="render-link"><h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
 				html &= '<span class="c-feed-post__domain">' & encodeForHTML( getBaseDomain( linkUrl ) ) & '</span></div></a>';
 				if ( len( ytId ) ) {
 					html &= '<div class="video-container"><iframe data-yt-embed width="560" height="315" src="https://www.youtube.com/embed/' & encodeForURL( ytId ) & '?enablejsapi=1" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>';
@@ -201,7 +217,7 @@ class {
 				}
 			} else {
 				html &= '<div class="render-link c-feed-post__link-card">';
-				html &= '<a class="post-body-anchor c-feed-post__link-content-link" href="' & postUrl & '"><div class="c-feed-post__link-content">';
+				html &= '<a class="post-body-anchor c-feed-post__link-content-link" href="' & postUrl & '" aria-label="' & encodeForHTMLAttribute( p.title ) & '"><div class="c-feed-post__link-content">';
 				html &= '<h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
 				html &= '<span class="c-feed-post__domain">' & encodeForHTML( getBaseDomain( linkUrl ) ) & '</span>';
 				var linkDesc = p.link_description ?: "";
@@ -212,13 +228,13 @@ class {
 				var linkImage = p.link_image ?: "";
 				if ( len( linkImage ) ) {
 					html &= '<a class="c-feed-post__link-thumb" href="' & goUrl( linkUrl ) & '" target="_blank" rel="noopener noreferrer nofollow ugc" aria-label="Open ' & encodeForHTMLAttribute( p.title ) & ' in a new tab">';
-					html &= '<img src="' & encodeForHTMLAttribute( linkImage ) & '" onerror="this.closest(''.c-feed-post__link-thumb'').style.display=''none''" loading="lazy" alt="" />';
+					html &= '<img src="/img/thumb/' & urlSafeBase64Encode( linkImage ) & '" width="160" height="108" onerror="this.closest(''.c-feed-post__link-thumb'').style.display=''none''" loading="lazy" alt="" />';
 					html &= '<span class="c-feed-post__ext-icon" aria-hidden="true"><i class="bi bi-box-arrow-up-right"></i></span></a>';
 				}
 				html &= '</div>';
 			}
 		} else {
-			html &= '<a class="post-body-anchor" href="' & postUrl & '"><div class="render-post"><h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
+			html &= '<a class="post-body-anchor" href="' & postUrl & '" aria-label="' & encodeForHTMLAttribute( p.title ) & '"><div class="render-post"><h5 class="c-feed-post__title">' & encodeForHTML( p.title ) & '</h5>';
 			var bodyText = p.body ?: "";
 			if ( len( trim( bodyText ) ) ) {
 				// This is only ever a CSS-truncated preview (.c-feed-post__selftext caps the
@@ -228,7 +244,7 @@ class {
 				if ( len( bodyText ) > 2000 ) {
 					bodyText = left( bodyText, 2000 ) & "…";
 				}
-				html &= '<div class="c-feed-post__selftext"><div class="c-feed-post__selftext-overlay" aria-hidden="true"></div>' & enhanceAnchorsInHtml( getSafeHTML( markdown( bodyText ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) & '</div>';
+				html &= '<div class="c-feed-post__selftext"><div class="c-feed-post__selftext-overlay" aria-hidden="true"></div>' & neutralizeHeadingsInHtml( enhanceAnchorsInHtml( getSafeHTML( markdown( bodyText ), { directives: { noopenerAndNoreferrerAnchors: true } } ) ) ) & '</div>';
 			}
 			html &= '</div></a>';
 		}
