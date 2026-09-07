@@ -12,17 +12,20 @@
 					<p class="text-danger mb-3">#encodeForHTML( data.formError )#</p>
 				</bx:if>
 
-				<form class="editor-body" method="post" action="/submit" data-editor-form>
-						<input type="hidden" name="_csrf" value="#encodeForHTMLAttribute( data.csrfToken ?: '' )#">
+				<bx:if !data.forums.len()>
+					<p class="text-muted">There are no forums to post to yet. Create a forum first.</p>
+				<bx:else>
+					<form class="editor-body" method="post" action="/submit" data-editor-form>
+							<input type="hidden" name="_csrf" value="#encodeForHTMLAttribute( data.csrfToken ?: '' )#">
 
-					<div class="editor-field">
-						<label class="editor-label" for="editor_forum">Post to</label>
-						<select id="editor_forum" name="forum" class="editor-select">
-							<bx:loop array="#data.forums#" index="forum">
-								<option value="#encodeForHTMLAttribute( forum.display )#" #forum.display == data.selected ? "selected" : ""#>#encodeForHTML( forum.display )#</option>
-							</bx:loop>
-						</select>
-					</div>
+						<div class="editor-field">
+							<label class="editor-label" for="editor_forum">Post to</label>
+							<select id="editor_forum" name="forum" class="editor-select">
+								<bx:loop array="#data.forums#" index="forum">
+									<option value="#encodeForHTMLAttribute( forum.display )#" #forum.display == data.selected ? "selected" : ""#>#encodeForHTML( forum.display )#</option>
+								</bx:loop>
+							</select>
+						</div>
 
 					<input type="hidden" name="post_type" value="post" data-post-type-input />
 					<div class="editor-tabs" role="tablist">
@@ -86,7 +89,8 @@
 						<button type="submit" class="editor-btn editor-btn--primary">Post</button>
 					</div>
 
-				</form>
+					</form>
+				</bx:if>
 
 			</div>
 		</div>
