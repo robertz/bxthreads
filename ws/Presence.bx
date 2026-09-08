@@ -4,11 +4,14 @@
  * reconnects, killed tabs, server restarts). Self-healing by construction: a session counts as
  * present only while its last ping is within PRESENCE_TTL_SECONDS.
  *
- * Ping transport is a plain REST POST (routes/ActionsRouter.bx), not a STOMP SEND frame — unlike
- * the source app's SocketBox-based WebSocket.bx::onSend() interception, boxExpressStomp() has no
- * per-destination SEND interception hook to absorb a frame before subscribers see it. A REST ping
- * that then explicitly broadcasts via Stomp is a direct, simpler equivalent with the same TTL
- * behavior.
+ * Ping transport is a real STOMP SEND frame (public/assets/js/realtime.js's sendPresencePing()/
+ * sendPostPresencePing(), via client.publish()) on the same post./forum. destination the page
+ * already subscribes to for broadcasts — ws/Stomp.bx's onSend() hook absorbs it (nothing gets
+ * relayed to subscribers as a raw ping) and calls ping()/pingPost() below directly, which then
+ * broadcasts the computed count back over that same destination. This used to be a REST POST
+ * side-channel before boxExpressStomp() gained an onSend interception hook to absorb a client
+ * SEND — see boxlang-express's own Stomp.bx docblock for that hook's absorb/transform/pass-through
+ * contract.
  *
  * Two independent presence "channels" share the same TTL/prune mechanics: forums (`ping()`/
  * `count()`, broadcasting `forum-presence` on the `forum.{id}` destination — the original Phase 6
