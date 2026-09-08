@@ -55,11 +55,16 @@ class {
 
 	/**
 	 * Returns recent activity rows for a user, newest first.
+	 *
+	 * @return {array} Array of structs: id, action, target_type, target_id, meta, created_utc
+	 *                 (UNIX timestamp — every `data-ts` attribute in this app's views must hold a
+	 *                 numeric epoch, not a raw SQL datetime, since global.js's client-side relative-
+	 *                 time refresh does a strict `+element.dataset.ts` numeric coercion on it).
 	 */
 	function getRecentByUser( required string usersId, numeric limit = 20, numeric offset = 0 ){
 		return queryExecute(
 			"SELECT BIN_TO_UUID(id) AS id, action, target_type,
-			        BIN_TO_UUID(target_id) AS target_id, meta, created_at
+			        BIN_TO_UUID(target_id) AS target_id, meta, UNIX_TIMESTAMP(created_at) AS created_utc
 			 FROM Activities
 			 WHERE users_id = UUID_TO_BIN(:users_id)
 			 ORDER BY created_at DESC

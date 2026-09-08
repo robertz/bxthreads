@@ -71,6 +71,7 @@ class {
 		r.get( "/mod/posts", ( req, res ) => modRoute( req, res, "posts" ) );
 		r.get( "/mod/forums", ( req, res ) => modRoute( req, res, "forums" ) );
 		r.get( "/mod/users", ( req, res ) => modRoute( req, res, "users" ) );
+		r.get( "/mod/users/:username", ( req, res ) => modUserProfileRoute( req, res ) );
 		r.get( "/mod/mods", ( req, res ) => modRoute( req, res, "mods" ) );
 
 		// Everything else is a 404, matching the source app's `:handler/:action?` catch-all.
@@ -678,6 +679,48 @@ class {
 		}
 
 		variables.View.renderPage( variables.app, arguments.res, "moderator/" & arguments.pageName, extraData );
+	}
+
+	/**
+	 * Moderator-only user detail page — replaces the public profile as the link target from
+	 * /mod/users (views/moderator/users.bxm), surfacing data a moderator needs but the public
+	 * profile deliberately never shows: email, raw permissions, account timestamps, subscribed
+	 * forums, recently viewed posts, recently visited forums, and the user's Activities log
+	 * (ActivityService.getRecentByUser() — the same append-only action log /mod/activity reads
+	 * site-wide, scoped here to one user). Also where a RENEGADE_ADMIN grant/revoke happens — see
+	 * grantAdminAction/revokeAdminAction in ActionsRouter.bx.
+	 *
+	 * Posts/comments still go through User::getPosts()/getComments() with the *viewing moderator's
+	 * own* id as viewers_id, same private-forum visibility rule the public profile already applies
+	 * — a moderator sees exactly what they'd see on that user's public profile, not a bypass of
+	 * every private forum's membership check. Broadening that would mean either forking those
+	 * queries or adding an admin-bypass parameter to methods every other caller also shares; not
+	 * worth the risk for a first version of this page.
+	 */
+	function modUserProfileRoute( req, res ) {
+		if ( !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) ) {
+			arguments.res.redirect( "/" );
+			return;
+		}
+
+		var user = new "models.beans.User"().getUserByName( arguments.req.params.username );
+		if ( !user.hasLoaded() ) {
+			arguments.res.status( 404 );
+			variables.View.renderPage( variables.app, arguments.res, "main/missing", {} );
+			return;
+		}
+
+		var viewerId = arguments.res.locals.currentUser.id;
+		variables.View.renderPage( variables.app, arguments.res, "moderator/user_profile", {
+			profileUser        : user.getMemento(),
+			profileStats        : user.getProfileStats(),
+			postsByUser         : user.getPosts( viewerId ),
+			commentsByUser       : user.getComments( viewerId ),
+			subscribedForums    : user.getSubscribedForums(),
+			recentForums        : user.getRecentForums(),
+			recentlyViewedPosts : user.getRecentlyViewedPosts(),
+			activity            : variables.AppContext.get( "ActivityService" ).getRecentByUser( user.getId(), 20 )
+		} );
 	}
 
 	// =========================================================================

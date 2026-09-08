@@ -23,7 +23,7 @@
 								<bx:loop array="#data.users#" index="u">
 									<tr>
 										<td class="mod-table__nowrap">
-											<a href="/u/#encodeForURL( u.user_name )#" class="post-link text-decoration-none">#encodeForHTML( u.user_name )#</a>
+											<a href="/mod/users/#encodeForURL( u.user_name )#" class="post-link text-decoration-none">#encodeForHTML( u.user_name )#</a>
 										</td>
 										<td class="mod-table__nowrap">#encodeForHTML( u.email )#</td>
 										<td class="mod-table__muted">#encodeForHTML( len( u.permissions ?: "" ) ? u.permissions : "—" )#</td>

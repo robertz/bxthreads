@@ -1,0 +1,203 @@
+<bx:output>
+<div class="mod-wrap">
+	#view("widgets/mod_nav")#
+
+	<div class="row">
+		<div class="col-12 mb-3">
+			<a href="/mod/users" class="mod-nav__btn">&larr; Back to Users</a>
+		</div>
+
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+						<div>
+							<h2 class="mod-section__title mb-1">u/#encodeForHTML( data.profileUser.user_name )#</h2>
+							<div class="mod-table__muted">#encodeForHTML( data.profileUser.email )#</div>
+						</div>
+						<bx:set isAdmin = len( data.profileUser.permissions ?: "" ) && data.profileUser.permissions.listFind( "RENEGADE_ADMIN" )>
+						<button
+							type="button"
+							class="mod-bots__btn #isAdmin ? 'mod-bots__btn--danger' : ''#"
+							data-toggle-admin
+							data-username="#encodeForHTMLAttribute( data.profileUser.user_name )#"
+							data-granted="#isAdmin ? 1 : 0#"
+						>#isAdmin ? "Revoke Admin" : "Grant Admin"#</button>
+					</div>
+					<p data-admin-status class="mb-0 mt-2"></p>
+
+					<hr class="text-muted">
+
+					<div class="row text-center mb-3">
+						<div class="col-4">
+							<h6 class="mb-0">#encodeForHTML( data.profileStats.karma )#</h6>
+							<div class="text-muted small">Karma</div>
+						</div>
+						<div class="col-4">
+							<h6 class="mb-0">#encodeForHTML( data.profileStats.posts )#</h6>
+							<div class="text-muted small">Posts</div>
+						</div>
+						<div class="col-4">
+							<h6 class="mb-0">#encodeForHTML( data.profileStats.comments )#</h6>
+							<div class="text-muted small">Comments</div>
+						</div>
+					</div>
+
+					<div class="mod-table__muted small mb-1">
+						Joined <span class="ts-display" data-ts="#encodeForHTMLAttribute( data.profileUser.created_utc )#">#momentFrom( data.profileUser.created_utc )#</span>
+						&middot;
+						Last updated <span class="ts-display" data-ts="#encodeForHTMLAttribute( data.profileUser.updated_utc )#">#momentFrom( data.profileUser.updated_utc )#</span>
+					</div>
+
+					<div data-admin-badges>
+						<bx:if !len( data.profileUser.permissions ?: "" )>
+							<span class="mod-table__muted small">No permissions</span>
+						<bx:else>
+							<bx:loop list="#data.profileUser.permissions#" index="p">
+								<span class="mod-activity-badge mod-activity-badge--#encodeForHTMLAttribute( p )#">#encodeForHTML( p.replace( '_', ' ', 'all' ) )#</span>
+							</bx:loop>
+						</bx:if>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12 col-lg-6 mb-3">
+			<div class="card c-card--bordered h-100">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Subscribed Forums</h2>
+					<bx:if !data.subscribedForums.len()>
+						<p class="mod-table__muted mb-0">Not subscribed to any forums.</p>
+					<bx:else>
+						<ul class="mb-0 ps-3">
+							<bx:loop array="#data.subscribedForums#" index="f">
+								<li><a href="/f/#encodeForURL( f.display )#" class="post-link text-decoration-none">f/#encodeForHTML( f.display )#</a></li>
+							</bx:loop>
+						</ul>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12 col-lg-6 mb-3">
+			<div class="card c-card--bordered h-100">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Recently Visited Forums</h2>
+					<bx:if !data.recentForums.len()>
+						<p class="mod-table__muted mb-0">No forum visits recorded.</p>
+					<bx:else>
+						<ul class="mb-0 ps-3">
+							<bx:loop array="#data.recentForums#" index="f">
+								<li><a href="/f/#encodeForURL( f.display )#" class="post-link text-decoration-none">f/#encodeForHTML( f.display )#</a></li>
+							</bx:loop>
+						</ul>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Recently Viewed Posts</h2>
+					<bx:if !data.recentlyViewedPosts.len()>
+						<p class="mod-table__muted mb-0">No recently viewed posts.</p>
+					<bx:else>
+						<table class="mod-table">
+							<thead>
+								<tr>
+									<th>Post</th>
+									<th>Forum</th>
+									<th>Viewed</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#data.recentlyViewedPosts#" index="v">
+									<tr>
+										<td><a href="/f/#encodeForURL( v.forum )#/comments/#encodeForURL( v.id_short )#/#encodeForURL( slugifyText( v.title ) )#" class="post-link text-decoration-none">#encodeForHTML( v.title )#</a></td>
+										<td class="mod-table__nowrap">f/#encodeForHTML( v.forum )#</td>
+										<td class="mod-table__nowrap mod-table__muted">
+											<span class="ts-display" data-ts="#encodeForHTMLAttribute( v.viewed_utc )#">#momentFrom( v.viewed_utc )#</span>
+										</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12 mb-3">
+			<div class="card c-card--bordered">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Recent Activity</h2>
+					<bx:if !data.activity.len()>
+						<p class="mod-table__muted mb-0">No activity recorded.</p>
+					<bx:else>
+						<table class="mod-table">
+							<thead>
+								<tr>
+									<th>Action</th>
+									<th>Target</th>
+									<th>When</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#data.activity#" index="a">
+									<tr>
+										<td class="mod-table__nowrap">
+											<span class="mod-activity-badge">#encodeForHTML( a.action.replace( '_', ' ', 'all' ) )#</span>
+										</td>
+										<td class="mod-table__muted">#encodeForHTML( a.target_type ?: "" )#</td>
+										<td class="mod-table__nowrap mod-table__muted">
+											<span class="ts-display" data-ts="#encodeForHTMLAttribute( a.created_utc )#">#momentFrom( a.created_utc )#</span>
+										</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12 col-lg-6 mb-3">
+			<div class="card c-card--bordered h-100">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Recent Posts</h2>
+					<bx:if !data.postsByUser.len()>
+						<p class="mod-table__muted mb-0">No posts yet.</p>
+					<bx:else>
+						<ul class="mb-0 ps-3">
+							<bx:loop array="#data.postsByUser#" index="p">
+								<li><a href="/f/#encodeForURL( p.forum )#/comments/#encodeForURL( p.id_short )#/#encodeForURL( slugifyText( p.title ) )#" class="post-link text-decoration-none">#encodeForHTML( p.title )#</a></li>
+							</bx:loop>
+						</ul>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-12 col-lg-6 mb-3">
+			<div class="card c-card--bordered h-100">
+				<div class="card-body mod-card-body">
+					<h2 class="mod-section__title">Recent Comments</h2>
+					<bx:if !data.commentsByUser.len()>
+						<p class="mod-table__muted mb-0">No comments yet.</p>
+					<bx:else>
+						<ul class="mb-0 ps-3">
+							<bx:loop array="#data.commentsByUser#" index="c">
+								<li>
+									<a href="/f/#encodeForURL( c.display )#/comments/#encodeForURL( c.post_id_short )#/#encodeForURL( slugifyText( c.title ) )#" class="post-link text-decoration-none">#encodeForHTML( left( c.body, 120 ) )#</a>
+									<span class="mod-table__muted small">on #encodeForHTML( c.title )#</span>
+								</li>
+							</bx:loop>
+						</ul>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

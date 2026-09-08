@@ -52,6 +52,9 @@ class {
 		r.get( "/forums/:display/moderators", safeAction( ( req, res ) => getForumModeratorsAction( req, res ) ) );
 		r.post( "/forums", safeAction( ( req, res ) => createForumAction( req, res ) ) );
 
+		r.post( "/mod/users/:username/admin", safeAction( ( req, res ) => grantAdminAction( req, res ) ) );
+		r.delete( "/mod/users/:username/admin", safeAction( ( req, res ) => revokeAdminAction( req, res ) ) );
+
 		r.get( "/notifications/recent", safeAction( ( req, res ) => recentNotificationsAction( req, res ) ) );
 		r.post( "/notifications/mark-read", safeAction( ( req, res ) => markNotificationsReadAction( req, res ) ) );
 
@@ -737,6 +740,59 @@ class {
 		}
 		cache( "dismalCache" ).clear( "admin:forums" );
 		ok( arguments.res, { display: forum.getDisplay() }, 201 );
+	}
+
+	// =========================================================================
+	// Admin: site-wide RENEGADE_ADMIN grant/revoke
+	// =========================================================================
+
+	/**
+	 * Grants RENEGADE_ADMIN — backs the toggle button on the moderator-only user profile
+	 * (views/moderator/user_profile.bxm, routes/AppRouter.bx::modUserProfileRoute). Only an
+	 * existing RENEGADE_ADMIN can grant it; User::addPermission() itself is generic (works for
+	 * any permission name already seeded in the Permissions table), this route just gates who's
+	 * allowed to call it with that specific permission name.
+	 */
+	function grantAdminAction( req, res ) {
+		if ( !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var user = new "models.beans.User"().getUserByName( arguments.req.params.username );
+		if ( !user.hasLoaded() ) {
+			fail( arguments.res, "User not found", 404 );
+			return;
+		}
+		user.addPermission( "RENEGADE_ADMIN" );
+		ok( arguments.res, { isAdmin: true } );
+	}
+
+	/**
+	 * Revokes RENEGADE_ADMIN. Refuses to remove the very last admin in the system — unlike a
+	 * forum's moderator list (recoverable by any other moderator, or by an admin), there'd be no
+	 * account left afterward with access to /mod/* at all to grant it back.
+	 */
+	function revokeAdminAction( req, res ) {
+		if ( !arguments.res.locals.currentUser.permissions.listFind( "RENEGADE_ADMIN" ) ) {
+			fail( arguments.res, "Forbidden", 403 );
+			return;
+		}
+		var user = new "models.beans.User"().getUserByName( arguments.req.params.username );
+		if ( !user.hasLoaded() ) {
+			fail( arguments.res, "User not found", 404 );
+			return;
+		}
+		var adminCount = queryExecute(
+			"SELECT COUNT(*) AS cnt FROM UsersPermissions UP JOIN Permissions P ON P.id = UP.permissions_id WHERE P.permission = 'RENEGADE_ADMIN'",
+			{},
+			{ returnType: "array" }
+		)[ 1 ].cnt;
+		if ( adminCount <= 1 && user.getPermissions().listFind( "RENEGADE_ADMIN" ) ) {
+			fail( arguments.res, "Cannot remove the last admin." );
+			return;
+		}
+		user.removePermission( "RENEGADE_ADMIN" );
+		ok( arguments.res, { isAdmin: false } );
 	}
 
 	// =========================================================================

@@ -182,6 +182,12 @@
 	white-space: nowrap;
 }
 
+.mod-bots__btn--danger {
+	background: rgba(255, 80, 80, 0.12);
+	color: #ff6b6b;
+	border-color: rgba(255, 80, 80, 0.35);
+}
+
 .mod-alert {
 	padding: 10px 14px;
 	border-radius: var(--ui-radius-sm);

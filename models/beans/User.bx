@@ -537,7 +537,7 @@ class accessors="true" {
 	 * Returns an empty array if the bean has not been loaded.
 	 *
 	 * @return {array} Array of structs: id, id_short, icon, forum (display), created_utc,
-	 *                 title, comment_count, vote_score, viewed_at.
+	 *                 title, comment_count, vote_score, viewed_utc.
 	 */
 	function getRecentlyViewedPosts() {
 		if ( !len( variables.id ) ) return [];
@@ -567,7 +567,7 @@ class accessors="true" {
 					FROM Votes V
 					WHERE V.posts_id = r.posts_id
 				), 0) AS vote_score,
-				r.created_at AS viewed_at
+				UNIX_TIMESTAMP(r.created_at) AS viewed_utc
 			FROM ranked r
 			JOIN Posts P ON P.id = r.posts_id
 			JOIN Forums F ON F.id = P.forums_id

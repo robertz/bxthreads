@@ -420,6 +420,22 @@ const DTActions = (function () {
 		}
 	}
 
+	// ── Moderator dashboard: grant/revoke RENEGADE_ADMIN ───────────────────
+
+	async function handleToggleAdmin(btn) {
+		const username = btn.dataset.username;
+		const granted = btn.dataset.granted === "1";
+		const statusEl = document.querySelector("[data-admin-status]");
+		try {
+			await postJSON(`/mod/users/${encodeURIComponent(username)}/admin`, granted ? "DELETE" : "POST");
+			// Reloads rather than patching the permissions-badge list in place — a CSV-of-badges
+			// re-render isn't worth the extra code for an action this infrequent.
+			window.location.reload();
+		} catch (e) {
+			if (statusEl) { statusEl.textContent = e.message; statusEl.className = "text-danger mb-0 mt-2"; }
+		}
+	}
+
 	// ── Moderator dashboard: create forum ──────────────────────────────────
 
 	async function handleCreateForumSubmit(form) {
@@ -907,6 +923,9 @@ const DTActions = (function () {
 
 			const dashRemoveMod = e.target.closest("[data-dash-remove-moderator]");
 			if (dashRemoveMod) { handleDashRemoveModerator(dashRemoveMod); return; }
+
+			const toggleAdmin = e.target.closest("[data-toggle-admin]");
+			if (toggleAdmin) { handleToggleAdmin(toggleAdmin); return; }
 
 			const removeMember = e.target.closest("[data-remove-member]");
 			if (removeMember) { handleRemoveMember(removeMember); return; }
