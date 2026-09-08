@@ -103,8 +103,7 @@ class {
 		var backTo = safeRedirectTarget( arguments.req );
 
 		if ( tooManyAttempts( arguments.req, "login" ) ) {
-			variables.Session.setFlash( arguments.req, { mode: "login", error: "Too many attempts — wait a few minutes and try again." } );
-			arguments.res.redirect( backTo ?: "/" );
+			authFailure( arguments.req, arguments.res, "login", backTo, "Too many attempts — wait a few minutes and try again." );
 			return;
 		}
 
@@ -114,22 +113,20 @@ class {
 		var user = new "models.beans.User"().getUserByNameOrEmail( userField );
 		if ( !user.hasLoaded() || !user.authenticate( password ) ) {
 			recordAttempt( arguments.req, "login" );
-			variables.Session.setFlash( arguments.req, { mode: "login", error: "Incorrect username/email or password.", username: userField } );
-			arguments.res.redirect( backTo ?: "/" );
+			authFailure( arguments.req, arguments.res, "login", backTo, "Incorrect username/email or password.", { username: userField } );
 			return;
 		}
 
 		arguments.req.session.uid = user.getId();
 		variables.AppContext.get( "ActivityService" ).log( user.getId(), "login" );
-		arguments.res.redirect( backTo ?: "/home" );
+		authSuccess( arguments.req, arguments.res, backTo ?: "/home" );
 	}
 
 	function signupRoute( req, res ) {
 		var backTo = safeRedirectTarget( arguments.req );
 
 		if ( tooManyAttempts( arguments.req, "signup" ) ) {
-			variables.Session.setFlash( arguments.req, { mode: "signup", error: "Too many attempts — wait a few minutes and try again." } );
-			arguments.res.redirect( backTo ?: "/" );
+			authFailure( arguments.req, arguments.res, "signup", backTo, "Too many attempts — wait a few minutes and try again." );
 			return;
 		}
 
@@ -139,23 +136,20 @@ class {
 
 		if ( !len( username ) || !len( email ) || len( password ) < 8 ) {
 			recordAttempt( arguments.req, "signup" );
-			variables.Session.setFlash( arguments.req, { mode: "signup", error: "Fill in every field — password needs at least 8 characters.", username: username, email: email } );
-			arguments.res.redirect( backTo ?: "/" );
+			authFailure( arguments.req, arguments.res, "signup", backTo, "Fill in every field — password needs at least 8 characters.", { username: username, email: email } );
 			return;
 		}
 
 		var existingByName = new "models.beans.User"().getUserByNameOrEmail( username );
 		if ( existingByName.hasLoaded() ) {
 			recordAttempt( arguments.req, "signup" );
-			variables.Session.setFlash( arguments.req, { mode: "signup", error: "That username is already taken.", username: username, email: email } );
-			arguments.res.redirect( backTo ?: "/" );
+			authFailure( arguments.req, arguments.res, "signup", backTo, "That username is already taken.", { username: username, email: email } );
 			return;
 		}
 		var existingByEmail = new "models.beans.User"().getUserByNameOrEmail( email );
 		if ( existingByEmail.hasLoaded() ) {
 			recordAttempt( arguments.req, "signup" );
-			variables.Session.setFlash( arguments.req, { mode: "signup", error: "That email is already registered.", username: username, email: email } );
-			arguments.res.redirect( backTo ?: "/" );
+			authFailure( arguments.req, arguments.res, "signup", backTo, "That email is already registered.", { username: username, email: email } );
 			return;
 		}
 
@@ -166,7 +160,7 @@ class {
 
 		arguments.req.session.uid = user.getId();
 		variables.AppContext.get( "ActivityService" ).log( user.getId(), "signup" );
-		arguments.res.redirect( backTo ?: "/home" );
+		authSuccess( arguments.req, arguments.res, backTo ?: "/home" );
 	}
 
 	function notFoundRoute( req, res ) {
@@ -729,10 +723,11 @@ class {
 	// =========================================================================
 
 	/**
-	 * The page the login/signup modal was opened from, so a successful (or failed, so the modal
-	 * reopens with the flash error in the same place) submit lands the user back where they
-	 * clicked Login rather than always at /home — see the modal's hidden `redirect_to` field
-	 * (views/modals/login.bxm), rendered from res.locals.currentPath at the time that page loaded.
+	 * The page the login/signup modal was opened from, so a successful submit lands the user back
+	 * where they clicked Login rather than always at /home — see the modal's hidden `redirect_to`
+	 * field (views/modals/login.bxm), rendered from res.locals.currentPath at the time that page
+	 * loaded. Also used as the fallback redirect target for the no-JS plain-form path on failure
+	 * (see authFailure() below) — the JS-driven path never navigates on failure at all.
 	 *
 	 * Only ever returns an internal, single-segment-root path (or null) — never the raw submitted
 	 * value — so a crafted `redirect_to` can't turn this login form into an open redirect:
@@ -745,6 +740,55 @@ class {
 			return javacast( "null", "" );
 		}
 		return target;
+	}
+
+	/**
+	 * The login/signup forms (views/modals/login.bxm) submit via fetch (public/assets/js/
+	 * actions.js's handleAuthFormSubmit()), which sends a JSON body — a plain HTML form POST
+	 * (no-JS fallback) sends application/x-www-form-urlencoded instead. Distinguishing the two
+	 * lets one route serve both: the JS path gets a JSON response it can show inline without any
+	 * navigation at all (the actual ask this was built for — a failed login shouldn't cost a page
+	 * load just to display an error), while the no-JS path keeps working exactly as before
+	 * (flash + redirect).
+	 */
+	private boolean function wantsJson( required any req ) {
+		return ( arguments.req.get( "Content-Type" ) ?: "" ).findNoCase( "application/json" ) > 0;
+	}
+
+	/**
+	 * Ends a login/signup route on failure. JSON callers get a plain {success:false, error:...}
+	 * body and nothing else — no redirect, no page load, so the modal (already open — the user is
+	 * mid-submit) can just show the message in place. Plain-form callers get the pre-existing
+	 * flash-then-redirect behavior, landing back on backTo with views/modals/login.bxm's
+	 * data-auto-open reopening the modal there.
+	 *
+	 * @param extra Additional flash fields (e.g. username/email, to refill the form) — only used
+	 *              on the plain-form path; the JS path never lost that input in the first place
+	 *              since it never navigated away.
+	 */
+	private void function authFailure( required any req, required any res, required string mode, any backTo, required string message, struct extra = {} ) {
+		if ( wantsJson( arguments.req ) ) {
+			arguments.res.status( 400 ).json( { success: false, error: arguments.message } );
+			return;
+		}
+		var flashData = { mode: arguments.mode, error: arguments.message };
+		structAppend( flashData, arguments.extra );
+		variables.Session.setFlash( arguments.req, flashData );
+		arguments.res.redirect( !isNull( arguments.backTo ) && len( arguments.backTo ) ? arguments.backTo : "/" );
+	}
+
+	/**
+	 * Ends a login/signup route on success. JSON callers get {success:true, data:{redirectTo:...}}
+	 * and navigate themselves (window.location.href — an actual page load, since the whole rest of
+	 * the page needs to reflect the now-logged-in state). Plain-form callers get a normal redirect,
+	 * same as before.
+	 */
+	private void function authSuccess( required any req, required any res, required string redirectTo ) {
+		if ( wantsJson( arguments.req ) ) {
+			arguments.res.status( 200 ).json( { success: true, data: { redirectTo: arguments.redirectTo } } );
+			return;
+		}
+		arguments.res.redirect( arguments.redirectTo );
 	}
 
 	/**

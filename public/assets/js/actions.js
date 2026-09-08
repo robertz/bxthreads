@@ -42,6 +42,28 @@ const DTActions = (function () {
 		if (window.DTModal) window.DTModal.open("login-modal");
 	}
 
+	// ── Login / signup: fetch-driven so a failed attempt never costs a page load ───────────────
+	//
+	// The modal is already open (the user is mid-submit) — on failure there's nothing to
+	// navigate to, just an error to show in place. On success the whole rest of the page needs
+	// to reflect the now-logged-in state, so that IS a real navigation (window.location.href),
+	// same as the plain-form fallback's redirect would have done.
+	async function handleAuthFormSubmit(form) {
+		const alertEl = document.querySelector("[data-login-alert]");
+		const alertText = document.querySelector("[data-login-alert-text]");
+		const payload = {};
+		new FormData(form).forEach((value, key) => {
+			if (key !== "_csrf") payload[key] = value;
+		});
+		try {
+			const data = await postJSON(form.getAttribute("action"), "POST", payload);
+			window.location.href = data.redirectTo || "/home";
+		} catch (e) {
+			if (alertText) alertText.textContent = e.message;
+			if (alertEl) alertEl.style.display = "";
+		}
+	}
+
 	function isAuthRequired(err) {
 		return /Authentication required/i.test(err.message);
 	}
@@ -999,6 +1021,7 @@ const DTActions = (function () {
 			if (e.target.matches("[data-add-member-form]")) { e.preventDefault(); handleAddMember(e.target); return; }
 			if (e.target.matches("[data-add-mod-form]")) { e.preventDefault(); handleDashAddModerator(e.target); return; }
 			if (e.target.matches("[data-create-forum-form]")) { e.preventDefault(); handleCreateForumSubmit(e.target); return; }
+			if (e.target.matches("[data-login-panel]")) { e.preventDefault(); handleAuthFormSubmit(e.target); return; }
 		});
 	}
 

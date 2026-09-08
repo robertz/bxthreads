@@ -179,6 +179,22 @@
 
 	#data.loginModal#
 
+	<bx:if len( data.loginModal )>
+		<script>
+			(function () {
+				// See views/modals/login.bxm's own comment on data-auto-open — a failed login/signup
+				// redirects back here with the error already rendered into the (closed) modal's
+				// markup; without this, it would never actually be shown to the user.
+				var modal = document.getElementById('login-modal');
+				if (modal && modal.hasAttribute('data-auto-open')) {
+					document.addEventListener('DOMContentLoaded', function () {
+						DTModal.open('login-modal');
+					});
+				}
+			})();
+		</script>
+	</bx:if>
+
 	<bx:if inForum>
 		<script>
 			(function () {

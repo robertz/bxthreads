@@ -1,24 +1,40 @@
 <bx:output>
 
-	<div id="login-modal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+	<bx:set flashMode = ( data.flash.keyExists("mode") ? data.flash.mode : "login" )>
+	<bx:set flashError = ( data.flash.keyExists("error") ? data.flash.error : "" )>
+	<bx:set flashUsername = ( data.flash.keyExists("username") ? data.flash.username : "" )>
+	<bx:set flashEmail = ( data.flash.keyExists("email") ? data.flash.email : "" )>
+
+	<!---
+		data-auto-open: a failed login/signup POST redirects back to the page the user submitted
+		from (see routes/AppRouter.bx's safeRedirectTarget()) rather than always to home — this
+		modal only ever gets opened via an explicit click on "Join / Sign In" otherwise, so without
+		this, a login/signup error set on the flash would render into this markup but never
+		actually be shown: the page just reloads looking like nothing happened, "swallowing" the
+		error. The tiny inline script right after this partial's include (views/layouts/Main.bxm)
+		opens the modal on page load when this attribute is present.
+	--->
+	<div id="login-modal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="login-modal-title" #len( flashError ) ? "data-auto-open" : ""#>
 		<div class="modal-dialog modal-dialog-centered">
 			<div class="modal-content bg-dark">
 				<div class="modal-body">
-					<bx:set flashMode = ( data.flash.keyExists("mode") ? data.flash.mode : "login" )>
-					<bx:set flashError = ( data.flash.keyExists("error") ? data.flash.error : "" )>
-					<bx:set flashUsername = ( data.flash.keyExists("username") ? data.flash.username : "" )>
-					<bx:set flashEmail = ( data.flash.keyExists("email") ? data.flash.email : "" )>
 					<bx:set suggestedUsername = new "lib.AppContext"().get("Admin").generateUsername()>
 
 					<h5 id="login-modal-title" class="login-title mb-4" data-login-heading="login" style="#flashMode == 'login' ? '' : 'display:none;'#">Sign In</h5>
 					<h5 class="login-title mb-4" data-login-heading="signup" style="#flashMode == 'signup' ? '' : 'display:none;'#">Create Account</h5>
 
-					<bx:if len(flashError)>
-						<div class="login-alert login-alert--error mb-3" role="alert">
-							<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
-							#encodeForHTML(flashError)#
-						</div>
-					</bx:if>
+					<!---
+						Always rendered (not just when a flash error exists) so the JS-driven submit
+						path (public/assets/js/actions.js's handleAuthFormSubmit()) has a stable element
+						to show/update on a failed fetch instead of creating one — a failed submit there
+						never navigates at all, so this is the ONLY way the user ever sees that error.
+						Still starts hidden unless a flash error was actually set (the no-JS plain-form
+						fallback path, or the very first render of a fresh page).
+					--->
+					<div class="login-alert login-alert--error mb-3" role="alert" data-login-alert style="#len(flashError) ? '' : 'display:none;'#">
+						<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+						<span data-login-alert-text>#encodeForHTML(flashError)#</span>
+					</div>
 
 					<form method="post" action="/login" data-login-panel="login" style="#flashMode == 'login' ? '' : 'display:none;'#">
 						<input type="hidden" name="_csrf" value="#encodeForHTMLAttribute( data.csrfToken ?: '' )#">
@@ -81,6 +97,8 @@
 					document.querySelectorAll('[data-login-heading]').forEach(function (h) {
 						h.style.display = (h.getAttribute('data-login-heading') === mode) ? '' : 'none';
 					});
+					var alertEl = document.querySelector('[data-login-alert]');
+					if (alertEl) alertEl.style.display = 'none';
 				});
 			});
 		})();
