@@ -192,6 +192,19 @@ app.use( ( err, req, res, next ) => {
 	}
 } )
 
+/**
+ * Link-preview thumbnail cache (models/services/ImageProxyService.bx) has no other eviction —
+ * nothing else in the app ever deletes from .cache/img-thumbs, so it grows forever without this.
+ * Runs once a day; immediate: false since a fresh boot's cache is never big enough to be worth
+ * pruning before the app has even served a request.
+ */
+app.schedule( 1000 * 60 * 60 * 24, ( job ) => {
+	var deleted = AppContext.get( "ImageProxyService" ).pruneCache();
+	if ( deleted > 0 ) {
+		AppContext.get( "Logger" ).info( "[#job.name#] pruned #deleted# cached link-preview thumbnail(s)" );
+	}
+}, { name: "img-thumb-cache-prune" } )
+
 app.listen( toNumeric( Config.getPort() ), ( port ) => {
 	println( "bxThreads listening on http://localhost:#port#" )
 } )

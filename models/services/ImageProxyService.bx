@@ -60,6 +60,10 @@ class {
 		var cachePath = cacheDir & "/" & cacheKey & ".jpg";
 
 		if ( fileExists( cachePath ) ) {
+			// Touch mtime on every hit so pruneCache()'s age check below approximates LRU
+			// (last-viewed, not just last-created) instead of evicting a thumbnail that's
+			// still being served daily just because it was first cached months ago.
+			createObject( "java", "java.io.File" ).init( cachePath ).setLastModified( createObject( "java", "java.lang.System" ).currentTimeMillis() );
 			return cachePath;
 		}
 
@@ -87,6 +91,33 @@ class {
 		fileWrite( cachePath, resizedBytes );
 
 		return cachePath;
+	}
+
+	/**
+	 * Deletes every cached thumbnail whose mtime is older than maxAgeMs — getThumbnailPath()
+	 * touches mtime on each cache hit, so this is an approximate LRU eviction (last-viewed, not
+	 * just last-created) rather than a strict creation-time TTL. Nothing else in the app ever
+	 * cleans this directory, so without a caller (see app.bxs's scheduled job) it grows forever.
+	 *
+	 * @return Number of files deleted.
+	 */
+	function pruneCache( numeric maxAgeMs = 30 * 24 * 60 * 60 * 1000 ) {
+		var cacheDir = expandPath( "./.cache/img-thumbs" );
+		if ( !directoryExists( cacheDir ) ) {
+			return 0;
+		}
+
+		var cutoff = createObject( "java", "java.lang.System" ).currentTimeMillis() - arguments.maxAgeMs;
+		var deleted = 0;
+		for ( var fileName in directoryList( path = cacheDir, recurse = false, listInfo = "name", filter = "*.jpg" ) ) {
+			var filePath = cacheDir & "/" & fileName;
+			var file     = createObject( "java", "java.io.File" ).init( filePath );
+			if ( file.lastModified() < cutoff ) {
+				fileDelete( filePath );
+				deleted++;
+			}
+		}
+		return deleted;
 	}
 
 	/**
