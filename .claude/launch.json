@@ -1,0 +1,11 @@
+{
+	"version": "0.0.1",
+	"configurations": [
+		{
+			"name": "bxThreads",
+			"runtimeExecutable": "boxlang",
+			"runtimeArgs": ["--bx-config", "./boxlang.json", "app.bxs"],
+			"port": 3000
+		}
+	]
+}
