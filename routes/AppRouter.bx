@@ -119,7 +119,7 @@ class {
 
 		arguments.req.session.uid = user.getId();
 		variables.AppContext.get( "ActivityService" ).log( user.getId(), "login" );
-		authSuccess( arguments.req, arguments.res, backTo ?: "/home" );
+		authSuccess( arguments.req, arguments.res, len( backTo ) ? backTo : "/home" );
 	}
 
 	function signupRoute( req, res ) {
@@ -160,7 +160,7 @@ class {
 
 		arguments.req.session.uid = user.getId();
 		variables.AppContext.get( "ActivityService" ).log( user.getId(), "signup" );
-		authSuccess( arguments.req, arguments.res, backTo ?: "/home" );
+		authSuccess( arguments.req, arguments.res, len( backTo ) ? backTo : "/home" );
 	}
 
 	function notFoundRoute( req, res ) {
@@ -734,10 +734,15 @@ class {
 	 * rejects anything not starting with "/", plus "//" and "/\" (both browser-normalized to a
 	 * scheme-relative URL, i.e. an off-site redirect) even though they do start with "/".
 	 */
-	private any function safeRedirectTarget( required any req ) {
+	private string function safeRedirectTarget( required any req ) {
 		var target = trim( arguments.req.body.redirect_to ?: "" );
 		if ( !len( target ) || target.left( 1 ) != "/" || target.left( 2 ) == "//" || target.left( 2 ) == "/\" ) {
-			return javacast( "null", "" );
+			// Empty string, not a real null: authFailure()/authSuccess() below take this
+			// positionally, and a real null passed positionally leaves the parameter unbound
+			// rather than null-valued (see StompMessage.bx's docblock for the same BoxLang
+			// quirk) — dereferencing it then throws "requested key ... not located" instead of
+			// failing gracefully.
+			return "";
 		}
 		return target;
 	}
