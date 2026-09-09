@@ -625,34 +625,32 @@ const DTGlobal = function() {
 	}
 
 	// ── Theme toggle ─────────────────────────────────────────────────────
+	// Lives in Account Settings (identified users only — see views/user/settings.bxm)
+	// rather than the header. Unidentified users have no override at all: they always
+	// follow prefers-color-scheme, both here and in the FOUC-prevention inline script in
+	// views/layouts/Main.bxm, which only reads localStorage when data.isIdentified.
 
 	const themeToggleInit = () => {
-		const btn = document.getElementById('theme-toggle')
-		if (!btn) return
-		const isLight = document.documentElement.getAttribute('data-theme') === 'light'
-		const icon = btn.querySelector('i')
-		if (isLight) {
-			icon.classList.replace('bi-sun', 'bi-moon')
-		} else {
-			icon.classList.replace('bi-moon', 'bi-sun')
-		}
+		const toggle = document.getElementById('theme-toggle')
+		if (!toggle) return
+		toggle.checked = document.documentElement.getAttribute('data-theme') === 'light'
 	}
 
-	const toggleTheme = (btn) => {
-		const isLight = document.documentElement.getAttribute('data-theme') === 'light'
-		if (isLight) {
-			document.documentElement.removeAttribute('data-theme')
-			localStorage.setItem('dt-theme', 'dark')
-			btn.querySelector('i').classList.replace('bi-moon', 'bi-sun')
-		} else {
+	const toggleTheme = (toggle) => {
+		if (toggle.checked) {
 			document.documentElement.setAttribute('data-theme', 'light')
 			localStorage.setItem('dt-theme', 'light')
-			btn.querySelector('i').classList.replace('bi-sun', 'bi-moon')
+		} else {
+			document.documentElement.removeAttribute('data-theme')
+			localStorage.setItem('dt-theme', 'dark')
 		}
 	}
 
 	window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
-		if (localStorage.getItem('dt-theme')) return
+		// A stale dt-theme from before this preference lived in Settings shouldn't keep
+		// overriding an unidentified visitor's system preference forever.
+		const isIdentified = window.dismal && window.dismal.is_identified
+		if (isIdentified && localStorage.getItem('dt-theme')) return
 		if (e.matches) {
 			document.documentElement.setAttribute('data-theme', 'light')
 		} else {

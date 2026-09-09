@@ -2,7 +2,11 @@
 <!doctype html>
 <html lang="en">
 <head>
-	<script>(function(){var s=localStorage.getItem('dt-theme');var t=s?s:(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');if(t==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
+	<bx:if data.isIdentified>
+		<script>(function(){var s=localStorage.getItem('dt-theme');var t=s?s:(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');if(t==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
+	<bx:else>
+		<script>(function(){if(window.matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.setAttribute('data-theme','light');}());</script>
+	</bx:if>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="description" content="#encodeForHTMLAttribute( data.meta.description )#">
@@ -110,14 +114,6 @@
 				</form>
 
 				<div class="c-header__actions">
-					<button
-						id="theme-toggle"
-						class="c-header__icon-btn"
-						onclick="DTGlobal.toggleTheme(this)"
-						aria-label="Toggle light/dark mode"
-						title="Toggle theme">
-						<i class="bi bi-sun" aria-hidden="true"></i>
-					</button>
 					<bx:if data.isIdentified>
 						<a
 							class="c-header__icon-btn c-header__icon-btn--create"
