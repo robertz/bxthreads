@@ -7,11 +7,12 @@
 -- earlier reverse-engineered-from-application-code version: table shapes,
 -- keys, and FK behavior here are exactly what's actually running.
 --
--- Includes seed data for Achievements + AchievementTiers only (the fixed
--- catalog of achievement definitions the app expects to exist — see
+-- Includes seed data for Achievements + AchievementTiers (the fixed catalog
+-- of achievement definitions the app expects to exist — see
 -- models/services/AchievementService.bx, which has no INSERT path for these
--- tables and reads them as pre-existing reference data). No other tables are
--- seeded; Users/Forums/Posts/etc. start empty.
+-- tables and reads them as pre-existing reference data), plus a single
+-- sentinel row in Users for lib/Config.bx's defaultUser (anonymous/guest
+-- sessions). No other tables are seeded; Forums/Posts/etc. start empty.
 --
 -- Apply with:  mysql -u root -p < db/schema.sql
 -- =============================================================================
@@ -40,6 +41,13 @@ CREATE TABLE `Users` (
 	UNIQUE KEY `Users_email_uindex` (`email`),
 	UNIQUE KEY `Users_id_short_uindex` (`id_short`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- Sentinel "anonymous" user — lib/Config.bx's defaultUser. Every logged-out
+-- session, guest view record, and unauthenticated STOMP connection attributes
+-- itself to this row, so it must exist before the app can serve a single
+-- request. `password` stays NULL: this account can never be logged into.
+INSERT INTO `Users` (`id`, `email`, `user_name`, `password`) VALUES
+	(UUID_TO_BIN('010f3a4c-a127-11ef-b36c-b30d25967fba'), 'anonymous@localhost', 'anonymous', NULL);
 
 -- =============================================================================
 -- Permissions
