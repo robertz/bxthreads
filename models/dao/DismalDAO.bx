@@ -301,7 +301,10 @@ class {
 				UNIX_TIMESTAMP(U.created_at) AS created_utc,
 				UNIX_TIMESTAMP(U.updated_at) AS updated_utc,
 				(
-					SELECT GROUP_CONCAT(P.permission)
+					-- COALESCE to '' — see models/beans/User.bx's identical subquery for why a
+					-- raw NULL here (a user with zero permissions rows) breaks every .listFind()
+					-- call site that assumes a string.
+					SELECT COALESCE( GROUP_CONCAT(P.permission), '' )
 					FROM UsersPermissions UP
 					JOIN Permissions P ON UP.permissions_id = P.id
 					WHERE UP.users_id = U.id

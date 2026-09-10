@@ -600,7 +600,15 @@ class accessors="true" {
 				UNIX_TIMESTAMP(U.created_at) AS created_utc,
 				UNIX_TIMESTAMP(U.updated_at) AS updated_utc,
 				(
-					SELECT GROUP_CONCAT(P.permission)
+					-- COALESCE to '', not raw NULL — a user with zero permissions rows (the
+					-- anonymous sentinel user, most reliably) would otherwise leave
+					-- variables.permissions a real null, and every listFind() call site across
+					-- the app assumes a string. Confirmed directly (2026-09-10): an
+					-- unauthenticated request hit exactly this on a fresh database with no
+					-- residual session, throwing a null-object method-invocation error on
+					-- listFind() — this codebase's own established pattern is coercing this kind
+					-- of SQL-layer edge case at the query, not patching every consumer.
+					SELECT COALESCE( GROUP_CONCAT(P.permission), '' )
 					FROM UsersPermissions UP
 					JOIN Permissions P ON UP.permissions_id = P.id
 					WHERE UP.users_id = U.id
