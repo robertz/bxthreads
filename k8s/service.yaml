@@ -1,0 +1,20 @@
+# sessionAffinity: ClientIP is a stopgap, not a fix — see k8s/README.md. Sessions
+# (bxModules.boxexpress.models.middleware.Session, wired up in app.bxs) are in-memory per pod
+# with no shared/durable store, so this only keeps one client pinned to one pod for the affinity
+# window; it does nothing for a pod restart or rollout, which still drops every session on it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bxthreads
+spec:
+  selector:
+    app: bxthreads
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  type: ClusterIP

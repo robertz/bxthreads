@@ -1,0 +1,28 @@
+# Assumes ingress-nginx is installed on the DOKS cluster (DigitalOcean's own how-to sets this up
+# via a LoadBalancer Service in front of it). Long read/send timeouts matter here specifically
+# because /stomp is a long-lived WebSocket connection, not just slow HTTP requests.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bxthreads
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - bxthreads.example.com
+      secretName: bxthreads-tls
+  rules:
+    - host: bxthreads.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bxthreads
+                port:
+                  number: 80

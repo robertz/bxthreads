@@ -5,6 +5,7 @@ settings.xml
 
 # Secrets / local env
 .env
+k8s/secret.yaml
 
 # BoxLang runtime + installed dependencies
 boxlang_modules/**

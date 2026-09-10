@@ -1,0 +1,10 @@
+.git
+.env
+.env.example
+.cache
+node_modules
+testbox
+tests
+.claude
+k8s
+*.md

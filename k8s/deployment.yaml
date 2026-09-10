@@ -1,0 +1,65 @@
+# replicas > 1 is what actually exercises modules.boxexpress.settings.cluster (boxlang.json) —
+# see k8s/README.md for the session-affinity caveat that comes with running more than one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bxthreads
+  labels:
+    app: bxthreads
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bxthreads
+  template:
+    metadata:
+      labels:
+        app: bxthreads
+    spec:
+      containers:
+        - name: bxthreads
+          image: registry.digitalocean.com/REPLACE_WITH_REGISTRY/bxthreads:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: bxthreads-config
+            - secretRef:
+                name: bxthreads-secrets
+          env:
+            # docker/entrypoint.sh builds CLUSTER_PEER_NAME=ws://$POD_IP:$APP_PORT from this —
+            # ClusterPeer.bx dials that URL directly, so each pod needs a routable identity other
+            # pods can actually connect to, not just a label.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          volumeMounts:
+            - name: img-thumb-cache
+              mountPath: /app/.cache/img-thumbs
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"
+      volumes:
+        # Per-pod, rebuildable (models/services/ImageProxyService.bx's own daily prune job) —
+        # deliberately NOT a shared/persistent volume. Each pod just builds its own thumbnail
+        # cache independently; that's a fine, low-stakes tradeoff, not an oversight.
+        - name: img-thumb-cache
+          emptyDir: {}

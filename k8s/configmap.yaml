@@ -1,0 +1,19 @@
+# Non-secret settings — see k8s/secret.example.yaml for the sibling Secret this pairs with.
+# Fill in the real DB_HOST/DB_PORT for your managed MySQL instance and the real SITE_URL before
+# applying.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bxthreads-config
+data:
+  APP_ENV: "production"
+  APP_PORT: "3000"
+  SITE_URL: "https://bxthreads.example.com"
+  SITE_NAME: "bxThreads"
+  # DigitalOcean Managed MySQL, not an in-cluster database — see the ClusterCache/schema note in
+  # k8s/README.md. custom connection flags (allowPublicKeyRetrieval, useSSL) already live in
+  # boxlang.json itself, not here.
+  DB_HOST: "REPLACE_WITH_MANAGED_MYSQL_HOST"
+  DB_PORT: "25060"
+  DB_DATABASE: "dismal"
+  DB_USER: "bxthreads"
