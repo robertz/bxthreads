@@ -38,13 +38,24 @@ class {
 		variables.presence = arguments.presence;
 	}
 
-	function build() {
+	/**
+	 * @clusterManager Optional app.getClusterManager() — relays every broadcast to peer nodes
+	 *                 over boxExpressStomp()'s built-in cluster relay when modules.boxexpress's
+	 *                 cluster.enabled is true (boxlang.json); a no-op ClusterManager (the module
+	 *                 default) when it isn't, so omitting this argument entirely behaves exactly
+	 *                 the same as before clustering existed.
+	 */
+	function build( any clusterManager ) {
 		var stomp = this;
-		return boxExpressStomp( {
+		var options = {
 			authenticate: ( login, passcode, host, connection, connectionMetadata ) => stomp.authenticate( connection, connectionMetadata ),
 			authorize: ( login, destination, access, connection, connectionMetadata ) => stomp.authorize( destination, connectionMetadata ),
 			onSend: ( destination, body, headers, connection, connectionMetadata ) => stomp.onSend( destination, connectionMetadata )
-		} );
+		};
+		if ( !isNull( arguments.clusterManager ) ) {
+			options[ "cluster" ] = arguments.clusterManager;
+		}
+		return boxExpressStomp( options );
 	}
 
 	/**
@@ -69,14 +80,16 @@ class {
 
 	/**
 	 * Absorbs a presence heartbeat SEND (see public/assets/js/realtime.js's sendPresencePing()/
-	 * sendPostPresencePing()) — nothing gets relayed to subscribers as a raw ping; Presence.ping()/
-	 * pingPost() update TTL bookkeeping and broadcast a *computed* count over the same destination
-	 * instead. Reuses the post./forum. destinations the client already subscribes to for
-	 * comment/vote/presence broadcasts rather than minting dedicated ping-only destinations — the
-	 * only client SEND traffic on either currently is this heartbeat. authorize() above already
-	 * gated this SEND against the same forum-visibility check subscribing to it requires, so no
-	 * separate check is needed here. Any other destination falls through (return true) to the
-	 * broker's normal verbatim-relay behavior, matching what happens with no onSend configured.
+	 * sendPostPresencePing()/sendUserPresencePing()) — nothing gets relayed to subscribers as a
+	 * raw ping. Presence.ping()/pingPost() update TTL bookkeeping and broadcast a *computed* count
+	 * over the same destination instead; Presence.pingUser() (the user.* case) just updates TTL
+	 * bookkeeping with no broadcast — see its own docblock for why. Reuses the post./forum./user.
+	 * destinations the client already subscribes to rather than minting dedicated ping-only
+	 * destinations — the only client SEND traffic on any of them currently is a heartbeat.
+	 * authorize() above already gated this SEND against the same check subscribing to it
+	 * requires, so no separate check is needed here. Any other destination falls through (return
+	 * true) to the broker's normal verbatim-relay behavior, matching what happens with no onSend
+	 * configured.
 	 */
 	function onSend( destination, connectionMetadata ) {
 		if ( isNull( variables.presence ) ) return true;
@@ -89,6 +102,12 @@ class {
 		}
 		if ( arguments.destination.left( 5 ) == "post." ) {
 			variables.presence.pingPost( arguments.destination.mid( 6, arguments.destination.len() - 5 ), sessionKey );
+			return false;
+		}
+		if ( arguments.destination.left( 5 ) == "user." ) {
+			// Only an identified client ever SENDs here — authorize() already restricts user.*
+			// to the connection's own uid, same gate its SUBSCRIBE goes through.
+			variables.presence.pingUser( arguments.connectionMetadata.uid, sessionKey );
 			return false;
 		}
 		return true;

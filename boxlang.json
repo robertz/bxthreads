@@ -11,6 +11,19 @@
 		}
 	},
 	"defaultDatasource": "dismal",
+	"modules": {
+		"boxexpress": {
+			"settings": {
+				"cluster": {
+					"enabled": true,
+					"name": "${env.CLUSTER_PEER_NAME:ws://localhost:3000}",
+					"cacheProvider": "clusterPeers",
+					"secretKey": "${env.CLUSTER_SECRET}",
+					"peerIdleTimeoutSeconds": 30
+				}
+			}
+		}
+	},
 	"mappings": {
 		"/lib": "${user-dir}/lib",
 		"/models": "${user-dir}/models",
@@ -19,6 +32,15 @@
 		"/testbox": "${user-dir}/testbox"
 	},
 	"caches": {
+		"clusterPeers": {
+			"provider": "BoxCacheProvider",
+			"properties": {
+				"objectStore": "JDBCStore",
+				"datasource": "dismal",
+				"table": "ClusterCache",
+				"autoCreate": false
+			}
+		},
 		"dismalCache": {
 			"enabled": true,
 			"provider": "BoxCacheProvider",

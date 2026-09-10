@@ -504,3 +504,28 @@ INSERT INTO `AchievementTiers` (`id`, `achievements_id`, `tier`, `label`, `thres
 INSERT INTO `AchievementTiers` (`id`, `achievements_id`, `tier`, `label`, `threshold`, `threshold_value`, `threshold_max`, `title`, `flavor`) VALUES (UUID_TO_BIN('c1329c42-53a5-11f1-a33a-e1aec1bf7920'), UUID_TO_BIN('9b5a319c-53a5-11f1-a33a-e1aec1bf7920'), 3, 'Long Absence', 'Post after 6+ months absent', 180, NULL, 'Six Months and Then, Quietly, You Were Back', 'Half a year of silence. Then a post in a thread like you''d never left. A few people noticed. One of them probably said ''welcome back'' and you probably said thanks and didn''t explain further. That''s the right way to do it.');
 INSERT INTO `AchievementTiers` (`id`, `achievements_id`, `tier`, `label`, `threshold`, `threshold_value`, `threshold_max`, `title`, `flavor`) VALUES (UUID_TO_BIN('c1329cec-53a5-11f1-a33a-e1aec1bf7920'), UUID_TO_BIN('9b5a319c-53a5-11f1-a33a-e1aec1bf7920'), 4, 'The Long Way Back', 'Post after 1+ year absent', 365, NULL, 'A Year Away is a Long Time to Come Back From', 'Twelve months gone. Things changed while you were out — some threads closed, some regulars drifted, some arguments got resolved and new ones started up. You came back anyway, to a place that had kept going without you. That takes something. The forum doesn''t know what to call it. It''s calling it this.');
 INSERT INTO `AchievementTiers` (`id`, `achievements_id`, `tier`, `label`, `threshold`, `threshold_value`, `threshold_max`, `title`, `flavor`) VALUES (UUID_TO_BIN('c1329d96-53a5-11f1-a33a-e1aec1bf7920'), UUID_TO_BIN('9b5a319c-53a5-11f1-a33a-e1aec1bf7920'), 5, 'The Return', 'Post after 2+ years absent', 730, NULL, 'Two Years. And Then You Posted.', 'Two years. The forum moved on, the way forums do. Your profile sat there. And then one day you posted something, and anyone who''d been here long enough did a small double-take, and the thread kept going, and you were just — back. Like a long gap in a conversation that someone finally decided to close. The forum is glad you closed it.');
+
+-- =============================================================================
+-- ClusterCache — boxlang-express's cluster.enabled peer discovery/manager
+-- election (see boxlang.json's modules.boxexpress.settings.cluster and
+-- app.bxs's app.getClusterManager()). BoxLang's own JDBCStore cache-provider
+-- table, MySQL variant — exact shape it expects (confirmed directly against
+-- the installed BoxLang 1.17.3 runtime's JDBCStore.class, since the auto-create
+-- path is documented as unreliable and this app deliberately runs with
+-- autoCreate: false instead). No seed data — every row here is written by
+-- ClusterManager.bx's own heartbeat/manager-election calls at runtime.
+-- =============================================================================
+DROP TABLE IF EXISTS `ClusterCache`;
+CREATE TABLE `ClusterCache` (
+	objectKey VARCHAR(500) PRIMARY KEY,
+	objectValue LONGTEXT,
+	hits BIGINT DEFAULT 0,
+	created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	lastAccessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	timeout BIGINT DEFAULT 0,
+	lastAccessTimeout BIGINT DEFAULT 0,
+	INDEX idx_lastAccessed (lastAccessed),
+	INDEX idx_created (created),
+	INDEX idx_hits (hits),
+	INDEX idx_timeout (timeout, lastAccessTimeout)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

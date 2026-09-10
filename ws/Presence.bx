@@ -13,11 +13,17 @@
  * SEND — see boxlang-express's own Stomp.bx docblock for that hook's absorb/transform/pass-through
  * contract.
  *
- * Two independent presence "channels" share the same TTL/prune mechanics: forums (`ping()`/
+ * Three independent presence "channels" share the same TTL/prune mechanics: forums (`ping()`/
  * `count()`, broadcasting `forum-presence` on the `forum.{id}` destination — the original Phase 6
- * feature) and posts (`pingPost()`/`countPost()`, broadcasting `post-presence` on the SAME
+ * feature), posts (`pingPost()`/`countPost()`, broadcasting `post-presence` on the SAME
  * `post.{id}` destination the post-detail page already subscribes to for comment/vote broadcasts
- * — no new client subscription needed). State: `{ "forum:{id}"|"post:{id}": { sessionKey:
+ * — no new client subscription needed), and per-user online status (`pingUser()`/`isUserOnline()`/
+ * `getOnlineUserIds()` — every identified visitor's client already subscribes to `user.{uid}` for
+ * their own notification badge, so the heartbeat rides that same destination too; see
+ * ws/Stomp.bx's onSend()). Unlike the other two, user presence has no broadcast: it's queried
+ * server-side at render time (lib/FeedItemRenderer.bx, lib/CommentRenderer.bx) for an online dot
+ * next to a poster's name, not pushed live to every open tab — see those files' own notes on that
+ * scope decision. State: `{ "forum:{id}"|"post:{id}"|"user:{id}": { sessionKey:
  * lastSeenEpochSeconds } }`. Nothing else — no per-session bookkeeping to leak or drift.
  */
 class {
@@ -45,6 +51,46 @@ class {
 
 	function countPost( required string postIdShort ) {
 		return _count( "post:" & arguments.postIdShort, "post." & arguments.postIdShort, "post-presence" );
+	}
+
+	/** Stamps sessionKey present for uid. No broadcast — see class docblock. */
+	function pingUser( required string uid, required string sessionKey ) {
+		var channelKey = "user:" & arguments.uid;
+		lock name="#variables.lockName#" type="exclusive" timeout="5" {
+			if ( !structKeyExists( variables.byChannel, channelKey ) ) {
+				variables.byChannel[ channelKey ] = {};
+			}
+			_prune( channelKey );
+			variables.byChannel[ channelKey ][ arguments.sessionKey ] = _nowSeconds();
+		}
+	}
+
+	/** True if uid has at least one un-expired ping (any tab/device counts). */
+	function isUserOnline( required string uid ) {
+		var channelKey = "user:" & arguments.uid;
+		lock name="#variables.lockName#" type="exclusive" timeout="5" {
+			if ( !structKeyExists( variables.byChannel, channelKey ) ) return false;
+			return _prune( channelKey ) > 0;
+		}
+	}
+
+	/**
+	 * Batch form of isUserOnline() for a feed/comment tree with many distinct authors — one lock
+	 * acquisition instead of one per row. Returns a uid-keyed struct; keyExists(uid) means online,
+	 * a missing key means offline (not present in the returned struct at all, so callers can use
+	 * plain keyExists() rather than checking a boolean value).
+	 */
+	function getOnlineUserIds( required array uids ) {
+		var online = {};
+		lock name="#variables.lockName#" type="exclusive" timeout="5" {
+			for ( var uid in arguments.uids ) {
+				var channelKey = "user:" & uid;
+				if ( structKeyExists( variables.byChannel, channelKey ) && _prune( channelKey ) > 0 ) {
+					online[ uid ] = true;
+				}
+			}
+		}
+		return online;
 	}
 
 	/**

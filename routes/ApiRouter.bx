@@ -13,6 +13,7 @@ class {
 
 	function register( required any app, required any router ) {
 		variables.AppContext = new "lib.AppContext"();
+		variables.app = arguments.app;
 		var r = arguments.router;
 
 		r.use( ( req, res, next ) => {
@@ -58,6 +59,9 @@ class {
 
 		// ── Activity ──────────────────────────────────────────────────────
 		r.get( "/activity", safeAction( ( req, res ) => listActivityAction( req, res ) ) );
+
+		// ── Cluster status (boxlang.json's modules.boxexpress.settings.cluster) ─────
+		r.get( "/cluster", safeAction( ( req, res ) => getClusterAction( req, res ) ) );
 
 		// ── Comments ──────────────────────────────────────────────────────
 		r.get( "/comments/:id_short", safeAction( ( req, res ) => getCommentAction( req, res ) ) );
@@ -304,6 +308,23 @@ class {
 
 	function listActivityAction( req, res ) {
 		ok( arguments.res, variables.AppContext.get( "DismalService" ).getHistoryFromRequest( buildRc( arguments.req ) ) );
+	}
+
+	/**
+	 * getClusterMembers() is this instance's own point of view (its own name plus whatever
+	 * peers it currently sees as live in ClusterCache — see ClusterManager.bx's own docblock),
+	 * not a cluster-wide broadcast query, so two instances hit separately can briefly disagree
+	 * right after one boots/drops, same as the underlying heartbeat TTL allows.
+	 */
+	function getClusterAction( req, res ) {
+		var clusterManager = variables.app.getClusterManager();
+		ok( arguments.res, {
+			enabled: clusterManager.isEnabled(),
+			me: clusterManager.getMyPeerName(),
+			isManager: clusterManager.isManager(),
+			manager: clusterManager.getManagerNode(),
+			members: clusterManager.getClusterMembers()
+		} );
 	}
 
 	// =========================================================================

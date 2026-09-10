@@ -60,6 +60,18 @@ class {
 		return reReplace( slug, "^-+|-+$", "", "all" );
 	}
 
+	/**
+	 * Small green dot next to a poster's name when they have an active session — see
+	 * ws/Presence.bx's pingUser()/isUserOnline(). usersId is optional: some callers (bookmarks/
+	 * user-index, per this file's own header docblock) only have a thinner row with no users_id
+	 * at all, so an empty string just renders nothing rather than erroring.
+	 */
+	private function onlineBadge( required string usersId ) {
+		if ( !len( arguments.usersId ) ) return "";
+		if ( !new "lib.AppContext"().get( "Presence" ).isUserOnline( arguments.usersId ) ) return "";
+		return '<span class="c-online-dot" title="Online" aria-label="Online"></span>';
+	}
+
 	private function getBaseDomain( required string urlString ) {
 		var host = "";
 		var u = trim( arguments.urlString );
@@ -192,6 +204,7 @@ class {
 		}
 		html &= '<span class="c-feed-post__meta-sep">&bull;</span>';
 		html &= '<a href="/u/' & encodeForURL( p.user_name ) & '" class="c-feed-post__author">u/' & encodeForHTML( p.user_name ) & '</a>';
+		html &= onlineBadge( p.users_id ?: "" );
 		html &= '<span class="c-feed-post__meta-sep">&bull;</span>';
 		html &= '<span class="c-feed-post__timestamp ts-display" data-ts="' & encodeForHTMLAttribute( p.created_utc ) & '">' & momentFrom( p.created_utc ) & '</span>';
 		html &= '</div>';

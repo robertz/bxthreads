@@ -361,3 +361,16 @@ body.modal-open { overflow: hidden; }
 .modal-backdrop.show  { opacity: 1; }
 
 .bg-dark { background-color: var(--ui-surface-1) !important; }
+
+/* Online-status dot next to a poster's name — lib/FeedItemRenderer.bx / lib/CommentRenderer.bx.
+   Inline-block + vertical-align so it sits on the text baseline next to the author link/badges
+   it's always adjacent to, not shared CSS for those (this file has no post/comment context). */
+.c-online-dot {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	margin-left: 4px;
+	border-radius: 50%;
+	background: var(--accent);
+	vertical-align: middle;
+}

@@ -122,7 +122,10 @@ app.use( sessionMiddleware.session( {
  * sees it unset for a real client.
  */
 stompBuilder = new "ws.Stomp"( sessionMiddleware )
-stomp = stompBuilder.build()
+// getClusterManager() is a no-op ClusterManager (isManager() always true, no peer relay) unless
+// modules.boxexpress's cluster.enabled is true in boxlang.json — passing it here unconditionally
+// costs a single-instance deployment nothing.
+stomp = stompBuilder.build( app.getClusterManager() )
 app.ws( "/stomp", stomp.handler() )
 AppContext.register( "Stomp", stomp )
 AppContext.register( "Broadcast", new "ws.Broadcast"( stomp ) )
@@ -205,6 +208,20 @@ app.schedule( 1000 * 60 * 60 * 24, ( job ) => {
 	}
 }, { name: "img-thumb-cache-prune" } )
 
-app.listen( toNumeric( Config.getPort() ), ( port ) => {
+/**
+ * --port=NNNN on the command line overrides APP_PORT (Config.getPort()/.env) — lets a second (or
+ * third...) instance of the same checkout run on its own port without a separate .env, e.g. for
+ * exercising boxlang.json's modules.boxexpress.settings.cluster (see db/schema.sql's ClusterCache
+ * table) locally:
+ *
+ *   boxlang --bx-config ./boxlang.json app.bxs --port=3001
+ *
+ * Each instance still needs its own CLUSTER_PEER_NAME (.env.example) — two instances sharing one
+ * peer name would overwrite each other's heartbeat under the same ClusterCache row.
+ */
+cliPortArg = cliGetArgs().options.port ?: "";
+listenPort = len( cliPortArg ) ? cliPortArg : Config.getPort();
+
+app.listen( toNumeric( listenPort ), ( port ) => {
 	println( "bxThreads listening on http://localhost:#port#" )
 } )

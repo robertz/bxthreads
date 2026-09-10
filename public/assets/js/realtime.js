@@ -33,6 +33,7 @@
 			// just that one subscription. Only subscribe when actually identified.
 			if (ctx.is_identified && ctx.uid) {
 				client.subscribe("user." + ctx.uid, handleUserMessage);
+				sendUserPresencePing();
 			}
 			if (ctx.forum_id_short) {
 				client.subscribe("forum." + ctx.forum_id_short, handleForumMessage);
@@ -129,8 +130,22 @@
 		} catch (e) { /* best-effort */ }
 	}
 
+	// Site-wide "this user is online" heartbeat — every page, not just forum/post ones, since the
+	// online dot next to a username (lib/FeedItemRenderer.bx, lib/CommentRenderer.bx) can be seen
+	// from anywhere. Rides the user.{uid} destination already subscribed to above for
+	// notifications; the server absorbs it the same way (ws/Stomp.bx's onSend()) rather than
+	// relaying it, and there's no broadcast back — see ws/Presence.bx's docblock for that scope
+	// decision.
+	function sendUserPresencePing() {
+		if (!ctx.is_identified || !ctx.uid || !client.connected) return;
+		try {
+			client.publish({ destination: "user." + ctx.uid, body: "" });
+		} catch (e) { /* best-effort */ }
+	}
+
 	setInterval(sendPresencePing, 30000);
 	setInterval(sendPostPresencePing, 30000);
+	setInterval(sendUserPresencePing, 30000);
 
 	client.activate();
 })();

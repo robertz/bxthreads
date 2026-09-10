@@ -43,6 +43,13 @@ class {
 		return new "lib.AppContext"().get( "UtilityService" ).enhanceAnchorsInHtml( arguments.html );
 	}
 
+	/** Same online-dot markup as lib/FeedItemRenderer.bx's onlineBadge() — see its own comment. */
+	private function onlineBadge( required string usersId ) {
+		if ( !len( arguments.usersId ) ) return "";
+		if ( !new "lib.AppContext"().get( "Presence" ).isUserOnline( arguments.usersId ) ) return "";
+		return '<span class="c-online-dot" title="Online" aria-label="Online"></span>';
+	}
+
 	/**
 	 * @param node     Comment struct (id, id_short, user_name, body, vote_score, created_utc, ...)
 	 *                 optionally with a nested `children` array, same shape Post::getCommentsTree()
@@ -65,6 +72,9 @@ class {
 		// client-side delete handler (public/assets/js/actions.js) which only ever swaps the
 		// body text, never the author, so a fresh page load doesn't look any different.
 		html &= '<a href="/u/' & encodeForURL( arguments.node.user_name ) & '" class="c-comment__author">' & encodeForHTML( arguments.node.user_name ) & '</a>';
+		if ( !isDeleted ) {
+			html &= onlineBadge( arguments.node.users_id ?: "" );
+		}
 		if ( isOP ) {
 			html &= '<span class="c-comment__op-badge">OP</span>';
 		}
