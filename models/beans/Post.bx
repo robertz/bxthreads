@@ -305,12 +305,6 @@ class accessors="true" {
 					queryExecute( sql, qparams );
 				}
 				transaction action="commit";
-				new "lib.AppContext"().get( "AchievementService" ).updateStreak( variables.users_id );
-				cache( "dismalCache" ).clear( "admin:recent_posts" );
-				new "lib.AppContext"().get( "ActivityService" ).log( variables.users_id, "create_post", "post", variables.id, { "post_type": variables.post_type } );
-				reload();
-				new "lib.AppContext"().get( "AchievementService" ).evaluateOnPostCreate( variables.users_id );
-				return true;
 			} catch ( any e ) {
 				transaction action="rollback";
 				// Log error for debugging
@@ -318,6 +312,24 @@ class accessors="true" {
 				return false;
 			}
 		}
+
+		// Best-effort side effects, deliberately outside the transaction above and in their own
+		// try/catch — the post itself already committed by this point, so a failure here (a bad
+		// achievement-evaluation edge case, a transient cache/log error, ...) must never report
+		// back to the caller as "the post wasn't created" the way it used to when these ran
+		// inside the same try block: `transaction action="rollback"` after a commit is a no-op,
+		// not an undo, so the row stayed in the database either way — only the return value was
+		// wrong. Confirmed directly (2026-09-16) via tests/specs/integration/TransactionRollbackSpec.bx.
+		try {
+			new "lib.AppContext"().get( "AchievementService" ).updateStreak( variables.users_id );
+			cache( "dismalCache" ).clear( "admin:recent_posts" );
+			new "lib.AppContext"().get( "ActivityService" ).log( variables.users_id, "create_post", "post", variables.id, { "post_type": variables.post_type } );
+			reload();
+			new "lib.AppContext"().get( "AchievementService" ).evaluateOnPostCreate( variables.users_id );
+		} catch ( any e ) {
+			new "lib.AppContext"().get( "Logger" ).error( "Post #variables.id# was created but a post-commit side effect failed: " & e.message & " " & e.detail );
+		}
+		return true;
 	}
 
 	/**

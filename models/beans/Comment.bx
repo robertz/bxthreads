@@ -233,17 +233,28 @@ class accessors="true" {
 				cache( "dismalCache" ).clear( "comment:#variables.id_short#" );
 
 				transaction action="commit";
-				if ( !loaded ) {
-					new "lib.AppContext"().get( "AchievementService" ).updateStreak( variables.users_id );
-				}
-				if ( !loaded ) {
-					new "lib.AppContext"().get( "ActivityService" ).log( variables.users_id, "create_comment", "comment", variables.id, { "posts_id": variables.posts_id } );
-					new "lib.AppContext"().get( "AchievementService" ).evaluate( variables.users_id );
-				}
 			} catch ( any e ) {
 				transaction action="rollback";
 				new "lib.AppContext"().get( "Logger" ).error( "Error saving comment: " & e.message & " " & e.detail );
 				throw( e );
+			}
+		}
+
+		// Best-effort side effects, deliberately outside the transaction above and in their own
+		// try/catch — the comment itself already committed by this point, so a failure here must
+		// never look like the save() itself failed the way it used to when these ran inside the
+		// same try block: `transaction action="rollback"` after a commit is a no-op, not an undo,
+		// so the row stayed in the database either way — only re-throwing here was wrong (a
+		// caller catching that exception would reasonably assume nothing was saved and could
+		// retry, creating a duplicate comment). Confirmed directly (2026-09-16) via
+		// tests/specs/integration/TransactionRollbackSpec.bx.
+		if ( !loaded ) {
+			try {
+				new "lib.AppContext"().get( "AchievementService" ).updateStreak( variables.users_id );
+				new "lib.AppContext"().get( "ActivityService" ).log( variables.users_id, "create_comment", "comment", variables.id, { "posts_id": variables.posts_id } );
+				new "lib.AppContext"().get( "AchievementService" ).evaluate( variables.users_id );
+			} catch ( any e ) {
+				new "lib.AppContext"().get( "Logger" ).error( "Comment #variables.id# was saved but a post-commit side effect failed: " & e.message & " " & e.detail );
 			}
 		}
 		return this;
