@@ -1,0 +1,171 @@
+/**
+ * Integration tests against the real local `dismal` MySQL database (same datasource app.bxs
+ * itself uses) — exercises the actual rollback path of each `transaction { ... }` block in
+ * models/beans/{Comment,Post,Forum}.bx, not just their happy-path inserts. Each test forces a
+ * real DB error partway through and asserts that nothing was left behind — the whole point of a
+ * transaction being there in the first place. Comment/Forum use an FK violation on a
+ * deliberately-nonexistent UUID for that; Post uses a duplicate primary key instead — see its own
+ * describe block for why.
+ *
+ * Forum.save()'s case is the richest one: it has two writes in its create path (Permissions,
+ * then Forums), so an invalid owner FK on the second write also verifies the first write — which
+ * genuinely succeeded before the second one failed — gets undone too, not just that the failing
+ * statement itself didn't leave a row.
+ *
+ * Post.createPost()'s link-post branch (a separate Links insert before the Posts insert) isn't
+ * covered here — exercising it for real triggers SpiderService's outbound HTTP fetch, which this
+ * suite deliberately keeps network-free (see DismalDAOSpec.bx's own note on staying safe to run
+ * against a real dev database). The duplicate-id path below still exercises the same rollback
+ * mechanics the link path relies on.
+ */
+class extends="testbox.system.BaseSpec" {
+
+	function beforeAll() {
+		// Same AppContext bootstrapping problem as DismalDAOSpec.bx: these beans' init() (via
+		// AppContext.get("Populate")) and their save()/createPost() catch blocks (AppContext.get(
+		// "Logger")) only get populated by app.bxs's own boot sequence, which never runs here.
+		// models/services also has to be scanned, not just Sql/Logger/Populate — confirmed
+		// directly (2026-09-16) that skipping it lets Post.createPost()'s post-commit
+		// AchievementService/ActivityService calls throw "no component registered", which its
+		// own catch block treats exactly like a real pre-commit failure (rollback + return
+		// false) even though the INSERT had already committed — see the Post.createPost()
+		// describe block below for why that's a real bug worth flagging on its own, separate
+		// from what this spec is actually testing.
+		var appCtx = new "lib.AppContext"();
+		if ( !appCtx.has( "Sql" ) ) {
+			appCtx.register( "Sql", new "lib.Sql"() );
+		}
+		if ( !appCtx.has( "Logger" ) ) {
+			appCtx.register( "Logger", new "lib.Logger"() );
+		}
+		if ( !appCtx.has( "Populate" ) ) {
+			appCtx.register( "Populate", new "lib.Populate"() );
+		}
+		if ( !appCtx.has( "AchievementService" ) ) {
+			// expandPath()'s relative paths resolve against THIS file's own directory, not the
+			// project root or CWD (confirmed directly, 2026-09-16, the same quirk StompMessage.bx
+			// and docker/install-modules.bxs's own comments already document for fileRead()) —
+			// "/models" is boxlang.json's own mapping, immune to that.
+			appCtx.scanDirectory( expandPath( "/models/services" ), "models.services" );
+		}
+
+		// Any real Forum/User row — plain FK validity, not a real relationship between them
+		// (Comments/Posts/Forums each check forums_id/users_id/posts_id/owner against their own
+		// table independently, so a real-but-unrelated row satisfies every check that isn't the
+		// one this spec deliberately breaks).
+		variables.validForumId = queryExecute( "SELECT BIN_TO_UUID(id) AS id FROM Forums LIMIT 1" ).id;
+		variables.validUserId  = queryExecute( "SELECT BIN_TO_UUID(id) AS id FROM Users LIMIT 1" ).id;
+		// A syntactically valid UUID guaranteed not to reference any real row — every FK check
+		// below fails on this specific value.
+		variables.bogusId = lCase( createGUID() );
+	}
+
+	function run() {
+		describe( "Transaction rollback", function() {
+
+			describe( "Comment.save()", function() {
+				it( "re-throws on an invalid posts_id FK and leaves no row behind", function() {
+					var c = new "models.beans.Comment"();
+					c.setForums_id( variables.validForumId );
+					c.setUsers_id( variables.validUserId );
+					c.setPosts_id( variables.bogusId );
+					c.setBody( "transaction rollback test — safe to ignore/delete if seen in real data" );
+
+					expect( function() {
+						c.save();
+					} ).toThrow();
+
+					// id is generated and set on the bean before the failed INSERT is attempted
+					// (see Comment.bx's save()), so it's available here even though save() threw.
+					var rows = queryExecute(
+						"SELECT COUNT(*) AS n FROM Comments WHERE id = UUID_TO_BIN(:id)",
+						{ id: { value: c.getId(), cfsqltype: "cf_sql_varchar" } }
+					);
+					expect( rows.n ).toBe( 0 );
+				} );
+			} );
+
+			describe( "Post.createPost()", function() {
+				// Not an FK-violation trigger like the other two specs here — confirmed directly
+				// (2026-09-16), reproducibly, against both this dev DB and a completely fresh
+				// schema.sql apply, that Posts_Forums_id_fk does NOT actually reject an insert
+				// referencing a nonexistent Forums.id on this MySQL install, even though the
+				// constraint is present in SHOW CREATE TABLE and information_schema.INNODB_FOREIGN
+				// (Comments_Forums_id_fk, against the very same Forums table, enforces correctly —
+				// this looks like a real MySQL-side anomaly specific to this one constraint, not
+				// an application bug; worth a look, but out of scope for this spec). A duplicate
+				// primary key is a DB error every engine enforces unconditionally, so it's used
+				// here instead to keep this test's result meaningful regardless of that.
+				it( "returns false and leaves the original row untouched when a second insert reuses its id", function() {
+					var testId = lCase( createGUID() );
+					var original = new "models.beans.Post"();
+					original.setId( testId );
+					original.setForums_id( variables.validForumId );
+					original.setUsers_id( variables.validUserId );
+					original.setPost_type( "text" );
+					original.setTitle( "transaction rollback test — original" );
+					original.setBody( "safe to ignore/delete if seen in real data" );
+
+					try {
+						expect( original.createPost() ).toBeTrue();
+
+						var duplicate = new "models.beans.Post"();
+						duplicate.setId( testId );
+						duplicate.setForums_id( variables.validForumId );
+						duplicate.setUsers_id( variables.validUserId );
+						duplicate.setPost_type( "text" );
+						duplicate.setTitle( "transaction rollback test — duplicate, should never land" );
+						duplicate.setBody( "safe to ignore/delete if seen in real data" );
+
+						expect( duplicate.createPost() ).toBeFalse();
+
+						var rows = queryExecute(
+							"SELECT title FROM Posts WHERE id = UUID_TO_BIN(:id)",
+							{ id: { value: testId, cfsqltype: "cf_sql_varchar" } }
+						);
+						expect( rows.recordCount ).toBe( 1 );
+						expect( rows.title ).toBe( "transaction rollback test — original" );
+					} finally {
+						queryExecute(
+							"DELETE FROM Posts WHERE id = UUID_TO_BIN(:id)",
+							{ id: { value: testId, cfsqltype: "cf_sql_varchar" } }
+						);
+					}
+				} );
+			} );
+
+			describe( "Forum.save()", function() {
+				it( "returns false on an invalid owner FK and rolls back the earlier Permissions insert too", function() {
+					// Unique per run so a prior failed/aborted test run can never collide with
+					// this one on Forums_display_uindex.
+					var display = "txntest" & getTickCount();
+					var f = new "models.beans.Forum"();
+					f.setDisplay( display );
+					f.setAbout( "transaction rollback test" );
+					f.setOwner( variables.bogusId );
+
+					expect( f.save() ).toBeFalse();
+
+					var forumRows = queryExecute(
+						"SELECT COUNT(*) AS n FROM Forums WHERE display = :display",
+						{ display: { value: display, cfsqltype: "cf_sql_varchar" } }
+					);
+					expect( forumRows.n ).toBe( 0 );
+
+					// The Permissions row is inserted BEFORE the Forums insert that actually
+					// fails (see Forum.bx's save()) — its own statement has no FK on owner at
+					// all, so it genuinely succeeds within the transaction before the rollback
+					// undoes it. This is the assertion that actually distinguishes "the
+					// transaction rolled back" from "the one failing statement just didn't run".
+					var permRows = queryExecute(
+						"SELECT COUNT(*) AS n FROM Permissions WHERE permission = :perm",
+						{ perm: { value: "FORUM_MODERATOR_" & uCase( display ), cfsqltype: "cf_sql_varchar" } }
+					);
+					expect( permRows.n ).toBe( 0 );
+				} );
+			} );
+
+		} );
+	}
+
+}
