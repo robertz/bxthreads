@@ -196,6 +196,11 @@ class {
 			arguments.res.redirect( "/" );
 			return;
 		}
+		// Search is the one page route whose content is defined by its query string, so q and
+		// forum stay in its canonical (any other param, e.g. tracking junk, is dropped).
+		arguments.res.locals.canonicalUrl = variables.AppContext.get( "RequestContext" ).canonicalFor(
+			"/search?q=" & encodeForURL( rawQuery ) & ( len( forumScope ) ? "&forum=" & encodeForURL( forumScope ) : "" )
+		);
 
 		var currentPerms  = arguments.res.locals.currentUser.permissions;
 		var subscribedIds = arguments.res.locals.subscribedForumIds;
@@ -301,6 +306,13 @@ class {
 		if ( !arguments.res.locals.forum.display.find( arguments.req.params.forum ) || arguments.req.params.post_slug.find( slugifyTitle( post.getTitle() ) ) == 0 ) {
 			arguments.res.locals.jsData.h = "f/" & arguments.res.locals.forum.display & "/comments/" & post.getId_short() & "/" & slugifyTitle( post.getTitle() );
 		}
+
+		// Any forum spelling or slug resolves to this post (jsData.h above only fixes the address
+		// bar client-side), and comment permalinks render a subtree of it, so all of them point
+		// their canonical at the one real post URL instead of echoing whatever was requested.
+		arguments.res.locals.canonicalUrl = variables.AppContext.get( "RequestContext" ).canonicalFor(
+			"/f/" & encodeForURL( arguments.res.locals.forum.display ) & "/comments/" & post.getId_short() & "/" & slugifyTitle( post.getTitle() )
+		);
 
 		post.trackView( arguments.res.locals.currentUser.id, arguments.req.get( "User-Agent" ) ?: "" );
 
@@ -845,6 +857,12 @@ class {
 			if ( !arguments.res.locals.forum.display.find( arguments.forumParam ) ) {
 				arguments.res.locals.jsData.h = "f/" & arguments.res.locals.forum.display;
 			}
+			// Forum lookup goes through MySQL's (usually case-insensitive) collation, so other
+			// spellings can render this page too: canonical uses the stored display name, same
+			// as the post override in viewPostRoute().
+			arguments.res.locals.canonicalUrl = variables.AppContext.get( "RequestContext" ).canonicalFor(
+				"/f/" & encodeForURL( arguments.res.locals.forum.display )
+			);
 			arguments.res.locals.socialMeta[ "og:description" ]      = "f/" & arguments.res.locals.forum.display & " - " & arguments.res.locals.forum.about;
 			arguments.res.locals.socialMeta[ "twitter:description" ] = "f/" & arguments.res.locals.forum.display & " - " & arguments.res.locals.forum.about;
 

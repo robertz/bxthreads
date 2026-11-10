@@ -18,11 +18,16 @@ class {
 		var userBean  = new "models.beans.User"().getById( uid );
 
 		// req.hostname strips the :port suffix (per boxlang-express's own docs) — use the raw
-		// Host header instead so <base href> / canonical URLs match the page's real origin,
-		// or the browser's CSP `base-uri 'self'` check rejects them as cross-origin.
+		// Host header instead so <base href> matches the page's real origin, or the browser's
+		// CSP `base-uri 'self'` check rejects it as cross-origin.
 		var hostAuthority = arguments.req.get( "Host" ) ?: arguments.req.hostname;
-		arguments.res.locals.canonicalUrl = arguments.req.protocol & "://" & hostAuthority & arguments.req.originalUrl;
-		arguments.res.locals.baseUrl      = arguments.req.protocol & "://" & hostAuthority & "/";
+		arguments.res.locals.baseUrl = arguments.req.protocol & "://" & hostAuthority & "/";
+		// The canonical URL is NOT built from the request: Host/protocol vary with how the page
+		// was reached (proxy, tunnel, IP, www vs apex) and the query string can be anything, so
+		// echoing them back turns every variant into its own "canonical". Use the configured
+		// SITE_URL plus the path only. Routes whose content genuinely depends on a query param
+		// (search) or that live at several URLs (posts) override this — see AppRouter.
+		arguments.res.locals.canonicalUrl = canonicalFor( arguments.req.path );
 		arguments.res.locals.currentPath  = arguments.req.path;
 		arguments.res.locals.isIdentified = isIdentified;
 		arguments.res.locals.currentUser  = userBean.getMemento();
@@ -92,6 +97,15 @@ class {
 		// Source app also set a hardcoded "fb:app_id" tied to the real site's Facebook
 		// integration — dropped rather than carried into a public demo fork under someone
 		// else's app id. The "?fwreinit=multipass" cache-clear convenience is also not ported.
+	}
+
+	/**
+	 * Absolute canonical URL for a site-relative path, on the configured SITE_URL origin.
+	 * Public so routes can build an override from their own known-good path.
+	 */
+	string function canonicalFor( required string path ) {
+		var siteUrl = reReplace( new "lib.AppContext"().get( "Config" ).getSiteUrl(), "/+$", "" );
+		return siteUrl & ( arguments.path.left( 1 ) == "/" ? "" : "/" ) & arguments.path;
 	}
 
 }
